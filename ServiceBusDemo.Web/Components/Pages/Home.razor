@@ -1,0 +1,136 @@
+@page "/"
+@rendermode InteractiveServer
+
+@inject ProducerApiClient ProducerApi
+@inject ILogger<Home> Logger
+
+<PageTitle>Service Bus Demo</PageTitle>
+
+<h1>Service Bus Demo</h1>
+
+<p>Publish a message to Azure Service Bus via the producer API, choosing which messaging pattern to demonstrate.</p>
+
+<EditForm Model="model" OnValidSubmit="SendAsync" FormName="send-message">
+    <DataAnnotationsValidator />
+
+    <fieldset class="mb-3" disabled="@isSending">
+        <legend class="form-label fs-6">Pattern</legend>
+        <InputRadioGroup @bind-Value="model.Pattern">
+            <div class="form-check">
+                <InputRadio id="pattern-competing" class="form-check-input" Value="MessagingPattern.CompetingConsumers" />
+                <label class="form-check-label" for="pattern-competing">
+                    <strong>Competing consumers</strong> &ndash; <code>business-events</code> topic, one shared subscription.
+                    Each message is handled by <em>one</em> consumer.
+                </label>
+            </div>
+            <div class="form-check">
+                <InputRadio id="pattern-pubsub" class="form-check-input" Value="MessagingPattern.PubSub" />
+                <label class="form-check-label" for="pattern-pubsub">
+                    <strong>Publish/subscribe</strong> &ndash; <code>broadcast-events</code> topic, one subscription per consumer.
+                    Each message is handled by <em>every</em> consumer.
+                </label>
+            </div>
+        </InputRadioGroup>
+    </fieldset>
+
+    <div class="mb-3">
+        <label for="message" class="form-label">Message</label>
+        <InputTextArea id="message" class="form-control" rows="4" @bind-Value="model.Message"
+                       placeholder="Enter a business event message..." disabled="@isSending" />
+        <ValidationMessage For="() => model.Message" />
+    </div>
+
+    <button type="submit" class="btn btn-primary" disabled="@isSending">
+        @if (isSending)
+        {
+            <span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>
+            <span>Sending...</span>
+        }
+        else
+        {
+            <span>Send</span>
+        }
+    </button>
+</EditForm>
+
+@if (statusMessage is not null)
+{
+    <div class="alert @(isError ? "alert-danger" : "alert-success") mt-3" role="status">
+        @statusMessage
+    </div>
+}
+
+@if (sentMessages.Count > 0)
+{
+    <h2 class="h5 mt-4">Sent this session</h2>
+    <table class="table table-sm">
+        <thead>
+            <tr>
+                <th>Sent</th>
+                <th>Pattern</th>
+                <th>Topic</th>
+                <th>Message ID</th>
+                <th>Message</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var sent in sentMessages)
+            {
+                <tr>
+                    <td>@sent.SentAt.ToLocalTime().ToString("T")</td>
+                    <td>@(sent.Pattern == MessagingPattern.PubSub ? "Pub/sub" : "Competing consumers")</td>
+                    <td><code>@sent.Topic</code></td>
+                    <td><code>@sent.MessageId</code></td>
+                    <td>@sent.Message</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    private readonly MessageModel model = new();
+    private readonly List<SentMessage> sentMessages = [];
+    private bool isSending;
+    private bool isError;
+    private string? statusMessage;
+
+    private async Task SendAsync()
+    {
+        isSending = true;
+        statusMessage = null;
+
+        try
+        {
+            var message = model.Message!.Trim();
+            var pattern = model.Pattern;
+            var result = await ProducerApi.SendMessageAsync(message, pattern);
+
+            sentMessages.Insert(0, new SentMessage(result.MessageId, pattern, result.Topic, message, DateTimeOffset.UtcNow));
+            statusMessage = $"Message {result.MessageId} published to '{result.Topic}'.";
+            isError = false;
+            model.Message = string.Empty;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to send message via producer API");
+            statusMessage = $"Failed to send message: {ex.Message}";
+            isError = true;
+        }
+        finally
+        {
+            isSending = false;
+        }
+    }
+
+    private sealed class MessageModel
+    {
+        [System.ComponentModel.DataAnnotations.Required(ErrorMessage = "Please enter a message.")]
+        [System.ComponentModel.DataAnnotations.StringLength(4096)]
+        public string? Message { get; set; }
+
+        public MessagingPattern Pattern { get; set; } = MessagingPattern.CompetingConsumers;
+    }
+
+    private sealed record SentMessage(string MessageId, MessagingPattern Pattern, string Topic, string Message, DateTimeOffset SentAt);
+}

@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/Docs/">
+    <File Path="README.md" />
+  </Folder>
+  <Project Path="ServiceBusDemo.AppHost/ServiceBusDemo.AppHost.csproj" />
+  <Project Path="ServiceBusDemo.ConsumerOne/ServiceBusDemo.ConsumerOne.csproj" />
+  <Project Path="ServiceBusDemo.ConsumerTwo/ServiceBusDemo.ConsumerTwo.csproj" />
+  <Project Path="ServiceBusDemo.Producer/ServiceBusDemo.Producer.csproj" />
+  <Project Path="ServiceBusDemo.ServiceDefaults/ServiceBusDemo.ServiceDefaults.csproj" />
+  <Project Path="ServiceBusDemo.Tests/ServiceBusDemo.Tests.csproj" />
+  <Project Path="ServiceBusDemo.Web/ServiceBusDemo.Web.csproj" />
+</Solution>

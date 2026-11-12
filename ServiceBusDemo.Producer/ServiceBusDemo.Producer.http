@@ -1,0 +1,19 @@
+@ServiceBusDemo.Producer_HostAddress = http://localhost:5286
+
+POST {{ServiceBusDemo.Producer_HostAddress}}/sendMessage
+Content-Type: application/json
+
+{
+  "message": "Hello from the producer!"
+}
+
+###
+
+POST {{ServiceBusDemo.Producer_HostAddress}}/broadcastMessage
+Content-Type: application/json
+
+{
+  "message": "Hello to every consumer!"
+}
+
+###

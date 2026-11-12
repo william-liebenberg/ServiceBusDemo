@@ -1,0 +1,5 @@
+@ServiceBusDemo.ConsumerTwo_HostAddress = http://localhost:5280
+
+GET {{ServiceBusDemo.ConsumerTwo_HostAddress}}/
+
+###
