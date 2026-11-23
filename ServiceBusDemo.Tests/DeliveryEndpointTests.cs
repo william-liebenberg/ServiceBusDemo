@@ -1,4 +1,4 @@
-using System.Net.Http.Json;
+using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -18,9 +18,10 @@ public class DeliveryEndpointTests
         ["messageId", "pattern", "consumer", "topic", "subscription", "body", "deliveryCount", "receivedAt"];
 
     [Theory]
-    [InlineData("CompetingConsumers", "Order placed")]
-    [InlineData("PubSub", "")]
-    public async Task ValidDeliveryIsAcceptedAndAddedToSingletonFeed(string pattern, string body)
+    [InlineData("CompetingConsumers", "Order placed", "application/json")]
+    [InlineData("PubSub", "", "application/json; charset=utf-8")]
+    [InlineData("PubSub", "Order placed", "application/json; charset=\"UTF-8\"")]
+    public async Task ValidDeliveryIsAcceptedAndAddedToSingletonFeed(string pattern, string body, string contentType)
     {
         await using var factory = new WebApplicationFactory<DeliveryFeed>();
         using var client = CreateClient(factory);
@@ -29,11 +30,31 @@ public class DeliveryEndpointTests
         feed.Changed += () => notifications++;
         var delivery = Example with { Pattern = pattern, Body = body };
 
-        using var response = await client.PostAsJsonAsync("/api/deliveries", delivery, TestContext.Current.CancellationToken);
+        using var content = new ByteArrayContent(JsonSerializer.SerializeToUtf8Bytes(delivery, JsonOptions));
+        content.Headers.ContentType = MediaTypeHeaderValue.Parse(contentType);
+        using var response = await client.PostAsync("/api/deliveries", content, TestContext.Current.CancellationToken);
 
         Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
         Assert.Equal(delivery, Assert.Single(feed.Snapshot()));
         Assert.Equal(1, notifications);
+    }
+
+    [Fact]
+    public async Task UnsupportedCharsetDoesNotChangeFeedOrNotify()
+    {
+        await using var factory = new WebApplicationFactory<DeliveryFeed>();
+        using var client = CreateClient(factory);
+        var feed = factory.Services.GetRequiredService<DeliveryFeed>();
+        feed.Add(Example);
+        var notifications = 0;
+        feed.Changed += () => notifications++;
+
+        using var content = new StringContent(SerializeExample().ToJsonString(), Encoding.Unicode, "application/json");
+        using var response = await client.PostAsync("/api/deliveries", content, TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.UnsupportedMediaType, response.StatusCode);
+        Assert.Equal(Example, Assert.Single(feed.Snapshot()));
+        Assert.Equal(0, notifications);
     }
 
     [Theory]

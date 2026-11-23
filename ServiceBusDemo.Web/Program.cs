@@ -1,4 +1,7 @@
 using System.Text.Json;
+using Microsoft.AspNetCore.Http.Json;
+using Microsoft.Extensions.Options;
+using Microsoft.Net.Http.Headers;
 using ServiceBusDemo.ServiceDefaults;
 using ServiceBusDemo.Web;
 using ServiceBusDemo.Web.Components;
@@ -42,9 +45,12 @@ app.MapStaticAssets();
 app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();
 
-app.MapPost("/api/deliveries", async (HttpRequest request, DeliveryFeed feed, CancellationToken cancellationToken) =>
+app.MapPost("/api/deliveries", async (HttpRequest request, DeliveryFeed feed, IOptions<JsonOptions> jsonOptions, CancellationToken cancellationToken) =>
 {
-    if (!request.HasJsonContentType())
+    if (!request.HasJsonContentType()
+        || !MediaTypeHeaderValue.TryParse(request.ContentType, out var contentType)
+        || (contentType.Charset.HasValue
+            && !HeaderUtilities.RemoveQuotes(contentType.Charset).Equals("utf-8", StringComparison.OrdinalIgnoreCase)))
     {
         return Results.StatusCode(StatusCodes.Status415UnsupportedMediaType);
     }
@@ -52,7 +58,9 @@ app.MapPost("/api/deliveries", async (HttpRequest request, DeliveryFeed feed, Ca
     DeliveryEvent? delivery;
     try
     {
-        delivery = await request.ReadFromJsonAsync<DeliveryEvent>(cancellationToken);
+        // Only UTF-8 is supported, so no charset lookup or transcoding is needed.
+        delivery = await JsonSerializer.DeserializeAsync<DeliveryEvent>(
+            request.Body, jsonOptions.Value.SerializerOptions, cancellationToken);
     }
     catch (JsonException)
     {
