@@ -1,9 +1,11 @@
 using ServiceBusDemo.ConsumerOne;
+using ServiceBusDemo.ServiceDefaults;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.AddServiceDefaults();
 builder.AddAzureServiceBusClient(connectionName: "messaging");
+builder.Services.AddDeliveryReporting();
 builder.Services.AddHostedService<MessageConsumer>();
 
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
