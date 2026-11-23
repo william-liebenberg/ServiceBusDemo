@@ -57,7 +57,7 @@ flowchart LR
     P[Producer] -->|publish| T[(business-events topic)]
     T --> S[[business-events subscription]]
     S -. "message A → one receiver" .-> C1[Consumer One]
-    S -. "message A → or this receiver" .-> C2[Consumer Two]
+    S -. "or one receiver" .-> C2[Consumer Two]
 
     classDef app fill:#0b5cab,color:#fff,stroke:#073b73,stroke-width:2px;
     classDef topic fill:#6f42c1,color:#fff,stroke:#4c2889,stroke-width:2px;
@@ -192,6 +192,12 @@ curl -X POST "<producer-url>/broadcastMessage" \
 ```
 
 A successful request returns `202 Accepted` with the generated `messageId` and topic name. The API rejects an empty message with `400 Bad Request`.
+
+## Delivery event ingest
+
+`POST /api/deliveries` on **webfrontend** accepts a JSON [`DeliveryEvent`](ServiceBusDemo.ServiceDefaults/DeliveryEvent.cs) and returns `202 Accepted` for a valid event. The contract lives in `ServiceBusDemo.ServiceDefaults` because the Web app and both consumers already reference that project. The consumers still only log deliveries; they do not post to this endpoint yet.
+
+The feed keeps the most recent 200 events in memory and loses them when the Web app restarts. The endpoint is unauthenticated and intended only for the local demo. Do not expose it publicly: any caller can submit events, and the 200-event cap limits the number of entries, not the size of each event.
 
 ## Project map
 
