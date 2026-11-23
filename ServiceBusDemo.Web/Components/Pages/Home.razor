@@ -15,8 +15,11 @@
         .ToLookup(card => card.Delivery.Consumer);
     var visibleCards = consumers.SelectMany(consumer => deliveriesByConsumer[consumer.Id]).ToArray();
     var cardsByMessage = visibleCards.ToLookup(card => card.Delivery.MessageId);
-    var hoveredId = hoveredCard?.Sequence >= firstSequence ? hoveredCard.Delivery.MessageId : null;
-    var focusedId = focusedCard?.Sequence >= firstSequence ? focusedCard.Delivery.MessageId : null;
+    var hover = hoveredCard?.Card.Sequence >= firstSequence ? hoveredCard : null;
+    var focus = focusedCard?.Card.Sequence >= firstSequence ? focusedCard : null;
+    // Correlate only the most recent interaction that is still active and visible.
+    var active = focus is null || hover?.Order > focus.Order ? hover : focus;
+    var highlightedId = active?.Card.Delivery.MessageId;
     UpdateDeliveryStatus(visibleCards, reportCount, clearCount);
 }
 
@@ -76,7 +79,7 @@
     </div>
 }
 
-<section class="mt-4" aria-labelledby="deliveries-heading">
+<section class="deliveries mt-4" aria-labelledby="deliveries-heading">
     <div class="d-flex align-items-center justify-content-between mb-2">
         <h2 id="deliveries-heading" class="h5 mb-0">Deliveries</h2>
         <button type="button" class="btn btn-outline-secondary btn-sm" @onclick="Feed.Clear">Clear</button>
@@ -100,7 +103,7 @@
                     var delivery = card.Delivery;
                     var matchCount = cardsByMessage[delivery.MessageId].Count() - 1;
                     var matchDescriptionId = $"delivery-matches-{card.Sequence}";
-                    var isHighlighted = delivery.MessageId == hoveredId || delivery.MessageId == focusedId;
+                    var isHighlighted = active is not null && delivery.MessageId == highlightedId;
                     var receivedAt = delivery.ReceivedAt.ToLocalTime();
                     var patternClass = delivery.Pattern switch
                     {
@@ -110,8 +113,10 @@
                     };
                     <article @key="card.Sequence" class="delivery-card @patternClass @(isHighlighted ? "delivery-highlighted" : "")"
                              tabindex="0" aria-label="Delivery to @consumer.Label" aria-describedby="@matchDescriptionId"
-                             @onmouseenter="() => hoveredCard = card" @onmouseleave="() => hoveredCard = null"
-                             @onfocus="() => focusedCard = card" @onblur="() => focusedCard = null">
+                             @onmouseenter="() => hoveredCard = new(card, ++interactionOrder)"
+                             @onmouseleave="() => EndInteraction(ref hoveredCard, card)"
+                             @onfocus="() => focusedCard = new(card, ++interactionOrder)"
+                             @onblur="() => EndInteraction(ref focusedCard, card)">
                         <span id="@matchDescriptionId" class="visually-hidden">@MatchDescription(matchCount)</span>
                         <strong class="delivery-pattern">@PatternLabel(delivery.Pattern)</strong>
                         <dl class="mb-0 mt-2">
@@ -173,8 +178,9 @@
 
     private readonly MessageModel model = new();
     private readonly List<SentMessage> sentMessages = [];
-    private DeliveryCard? hoveredCard;
-    private DeliveryCard? focusedCard;
+    private CardInteraction? hoveredCard;
+    private CardInteraction? focusedCard;
+    private long interactionOrder;
     private long? lastReportCount;
     private long lastClearCount;
     private long deliveryStatusVersion;
@@ -248,6 +254,14 @@
         lastClearCount = clearCount;
     }
 
+    private static void EndInteraction(ref CardInteraction? interaction, DeliveryCard card)
+    {
+        if (interaction?.Card.Sequence == card.Sequence)
+        {
+            interaction = null;
+        }
+    }
+
     private static string MatchDescription(int matches) => matches switch
     {
         0 => "No other visible reports for this message.",
@@ -299,5 +313,6 @@
     }
 
     private sealed record DeliveryCard(long Sequence, DeliveryEvent Delivery);
+    private sealed record CardInteraction(DeliveryCard Card, long Order);
     private sealed record SentMessage(string MessageId, MessagingPattern Pattern, string Topic, string Message, DateTimeOffset SentAt);
 }

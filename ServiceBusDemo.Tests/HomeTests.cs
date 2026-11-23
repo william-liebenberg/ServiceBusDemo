@@ -190,7 +190,7 @@ public class HomeTests
     }
 
     [Fact]
-    public async Task HoverAndFocusIndependentlyHighlightCardsWithMatchingMessageIds()
+    public async Task MostRecentActiveInteractionHighlightsOnlyItsMatchingMessageId()
     {
         using var client = new HttpClient();
         var feed = new DeliveryFeed();
@@ -208,13 +208,17 @@ public class HomeTests
         home.Find(otherCard).MouseEnter();
         AssertHighlights("other-id");
         home.Find(sharedCard).Focus();
-        AssertHighlights("other-id", "shared-id", "shared-id");
+        AssertHighlights("shared-id", "shared-id");
+        home.Find(sharedCard).Blur();
+        AssertHighlights("other-id");
+        home.Find(sharedCard).Focus();
         home.Find(otherCard).MouseLeave();
         AssertHighlights("shared-id", "shared-id");
         home.Find(otherCard).MouseEnter();
-        home.Find(sharedCard).Blur();
         AssertHighlights("other-id");
         home.Find(otherCard).MouseLeave();
+        AssertHighlights("shared-id", "shared-id");
+        home.Find(sharedCard).Blur();
         AssertHighlights();
 
         void AssertHighlights(params string[] ids) => Assert.Equal(ids,
