@@ -109,7 +109,6 @@
             sentMessages.Insert(0, new SentMessage(result.MessageId, pattern, result.Topic, message, DateTimeOffset.UtcNow));
             statusMessage = $"Message {result.MessageId} published to '{result.Topic}'.";
             isError = false;
-            model.Message = string.Empty;
         }
         catch (Exception ex)
         {
