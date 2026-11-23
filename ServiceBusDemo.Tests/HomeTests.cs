@@ -14,6 +14,7 @@ public class HomeTests
     private const string TrimmedMessage = "Order 42 was placed";
     private const string Cards = ".delivery-card";
     private const string Highlighted = ".delivery-highlighted";
+    private const string DeliveryStatus = "#delivery-status[role=status][aria-live=polite][aria-atomic=true] span";
 
     [Theory]
     [InlineData("#pattern-competing", "/sendMessage", "business-events")]
@@ -42,6 +43,8 @@ public class HomeTests
         Assert.Equal(new[] { "id-2", "id-1" }, home.FindAll("tbody td:nth-child(4)").Select(cell => cell.TextContent));
         Assert.Equal(new[] { TrimmedMessage, TrimmedMessage }, home.FindAll("tbody td:nth-child(5)").Select(cell => cell.TextContent));
         Assert.All(home.FindAll("tbody td:last-child"), cell => Assert.Equal("None reported", cell.TextContent));
+        Assert.Single(home.FindAll(".table-responsive[tabindex='0'][aria-describedby=sent-consumers-note] table"));
+        Assert.Contains("retained reports only and may be incomplete", home.Find("#sent-consumers-note").TextContent);
     }
 
     [Fact]
@@ -83,7 +86,7 @@ public class HomeTests
         Assert.Empty(handler.Requests);
         Assert.Equal(message, GetRenderedMessage(home));
         Assert.Contains(validationMessage, home.Find(".validation-message").TextContent);
-        Assert.Empty(home.FindAll("[role=status], tbody tr"));
+        Assert.Empty(home.FindAll(".alert[role=status], tbody tr"));
     }
 
     [Theory]
@@ -99,16 +102,19 @@ public class HomeTests
         await using var context = CreateContext(client, feed);
         var home = context.Render<Home>();
 
+        Assert.Empty(home.Find(DeliveryStatus).TextContent);
         Assert.Single(home.FindAll(Cards));
         Assert.Empty(home.FindAll($"#{otherConsumer} {Cards}"));
         Assert.Equal("Consumer One", home.Find("#ConsumerOne h3").TextContent);
         Assert.Equal("Consumer Two", home.Find("#ConsumerTwo h3").TextContent);
         var card = home.Find($"#{consumer} .pattern-competing");
+        var receivedAt = competing.ReceivedAt.ToLocalTime();
         Assert.Equal("Competing consumers", card.QuerySelector(".delivery-pattern")!.TextContent);
-        Assert.Equal(new[] { competing.Subscription, competing.MessageId, competing.Body, competing.ReceivedAt.ToLocalTime().ToString("G") },
+        Assert.Equal(new[] { competing.Subscription, competing.MessageId, competing.Body, $"{receivedAt:G} (UTC{receivedAt:zzz})" },
             card.QuerySelectorAll("dd").Select(field => field.TextContent));
+        Assert.Equal("Received (server time)", card.QuerySelectorAll("dt").Last().TextContent);
         Assert.Empty(card.QuerySelectorAll("b"));
-        Assert.Equal(competing.ReceivedAt.ToLocalTime().ToString("O"), card.QuerySelector("time")!.GetAttribute("datetime"));
+        Assert.Equal(receivedAt.ToString("O"), card.QuerySelector("time")!.GetAttribute("datetime"));
 
         await Task.Run(() =>
         {
@@ -124,6 +130,8 @@ public class HomeTests
                 var broadcast = home.Find($"#{lane} .pattern-pubsub");
                 Assert.Equal("Publish/subscribe", broadcast.QuerySelector(".delivery-pattern")!.TextContent);
                 Assert.Equal("broadcast-42", broadcast.QuerySelectorAll("dd")[1].TextContent);
+                Assert.Equal("1 other visible report for this message.",
+                    home.Find($"#{broadcast.GetAttribute("aria-describedby")}").TextContent);
             }
         });
     }
@@ -162,7 +170,11 @@ public class HomeTests
         feed.Add(Delivery("sent", "ConsumerThree"));
         home.WaitForAssertion(() =>
         {
-            Assert.Equal(3, home.FindAll(Cards).Count);
+            var cards = home.FindAll(Cards);
+            Assert.Equal(3, cards.Count);
+            Assert.Equal(3, cards.Select(card => card.GetAttribute("aria-describedby")).Distinct().Count());
+            Assert.All(cards, card => Assert.Equal("2 other visible reports for this message.",
+                home.Find($"#{card.GetAttribute("aria-describedby")}").TextContent));
             Assert.Equal("Consumer One, Consumer Two", Recipients(home));
         });
 
@@ -178,36 +190,63 @@ public class HomeTests
     }
 
     [Fact]
-    public async Task HoverAndFocusHighlightOnlyCardsWithTheSameMessageId()
+    public async Task HoverAndFocusIndependentlyHighlightCardsWithMatchingMessageIds()
     {
         using var client = new HttpClient();
         var feed = new DeliveryFeed();
         feed.Add(Delivery("shared-id", "ConsumerOne"));
         feed.Add(Delivery("shared-id", "ConsumerTwo"));
         feed.Add(Delivery("other-id", "ConsumerTwo", "CompetingConsumers"));
+        feed.Add(Delivery("unrelated-id", "ConsumerOne", "CompetingConsumers"));
         await using var context = CreateContext(client, feed);
         var home = context.Render<Home>();
-        const string sharedCard = "#ConsumerOne .delivery-card";
+        const string sharedCard = "#ConsumerOne .pattern-pubsub";
         const string otherCard = "#ConsumerTwo .pattern-competing";
 
-        Assert.Empty(home.FindAll(Highlighted));
+        AssertHighlights();
         Assert.Equal("0", home.Find(sharedCard).GetAttribute("tabindex"));
-        home.Find(sharedCard).MouseEnter();
-        AssertSharedHighlight();
-        home.Find(sharedCard).MouseLeave();
-        Assert.Empty(home.FindAll(Highlighted));
-
-        home.Find(sharedCard).Focus();
-        AssertSharedHighlight();
         home.Find(otherCard).MouseEnter();
-        Assert.Equal("other-id", Assert.Single(home.FindAll(Highlighted)).QuerySelectorAll("dd")[1].TextContent);
+        AssertHighlights("other-id");
+        home.Find(sharedCard).Focus();
+        AssertHighlights("other-id", "shared-id", "shared-id");
         home.Find(otherCard).MouseLeave();
-        AssertSharedHighlight();
+        AssertHighlights("shared-id", "shared-id");
+        home.Find(otherCard).MouseEnter();
         home.Find(sharedCard).Blur();
-        Assert.Empty(home.FindAll(Highlighted));
+        AssertHighlights("other-id");
+        home.Find(otherCard).MouseLeave();
+        AssertHighlights();
 
-        void AssertSharedHighlight() => Assert.Equal(new[] { "shared-id", "shared-id" },
-            home.FindAll(Highlighted).Select(card => card.QuerySelectorAll("dd")[1].TextContent));
+        void AssertHighlights(params string[] ids) => Assert.Equal(ids,
+            home.FindAll(Highlighted).Select(card => card.QuerySelectorAll("dd")[1].TextContent).Order());
+    }
+
+    [Fact]
+    public async Task AnnouncesArrivalsEvenAtCapacityAndDoesNotHighlightEvictedCard()
+    {
+        using var client = new HttpClient();
+        var feed = new DeliveryFeed();
+        var earliest = Delivery("repeated", "ConsumerOne");
+        feed.Add(earliest);
+        for (var i = 0; i < 199; i++)
+        {
+            feed.Add(Delivery($"other-{i}", "ConsumerThree"));
+        }
+        await using var context = CreateContext(client, feed);
+        var home = context.Render<Home>();
+        var card = Assert.Single(home.FindAll(Cards));
+        var descriptionId = card.GetAttribute("aria-describedby");
+        Assert.Equal("No other visible reports for this message.", home.Find($"#{descriptionId}").TextContent);
+        card.Focus();
+        Assert.Single(home.FindAll(Highlighted));
+
+        feed.Add(earliest);
+        home.WaitForAssertion(() =>
+        {
+            Assert.NotEqual(descriptionId, Assert.Single(home.FindAll(Cards)).GetAttribute("aria-describedby"));
+            Assert.Empty(home.FindAll(Highlighted));
+            Assert.Equal("1 new delivery report.", home.Find(DeliveryStatus).TextContent);
+        });
     }
 
     [Fact]
@@ -243,6 +282,7 @@ public class HomeTests
         {
             Assert.Single(second.FindAll(Cards));
             Assert.Equal("Consumer One", Recipients(second));
+            Assert.Equal("1 new delivery report.", second.Find(DeliveryStatus).TextContent);
         });
         Assert.Equal(firstRenderCount, first.RenderCount);
 
@@ -251,6 +291,7 @@ public class HomeTests
             Assert.Empty(home.FindAll(Cards));
             Assert.Equal(sentId, home.Find("tbody td:nth-child(4)").TextContent);
             Assert.Equal("None reported", Recipients(home));
+            Assert.Equal("Delivery reports cleared.", home.Find(DeliveryStatus).TextContent);
         }
     }
 
