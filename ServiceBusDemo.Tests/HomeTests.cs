@@ -112,7 +112,7 @@ public class HomeTests
         Assert.Equal("Competing consumers", card.QuerySelector(".delivery-pattern")!.TextContent);
         Assert.Equal(new[] { competing.Subscription, competing.MessageId, competing.Body, $"{receivedAt:G} (UTC{receivedAt:zzz})" },
             card.QuerySelectorAll("dd").Select(field => field.TextContent));
-        Assert.Equal("Received (server time)", card.QuerySelectorAll("dt").Last().TextContent);
+        Assert.Equal("Received (local time)", card.QuerySelectorAll("dt").Last().TextContent);
         Assert.Empty(card.QuerySelectorAll("b"));
         Assert.Equal(receivedAt.ToString("O"), card.QuerySelector("time")!.GetAttribute("datetime"));
 
