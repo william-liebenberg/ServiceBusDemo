@@ -9,7 +9,7 @@
 <p align="center">
   <img alt=".NET 11" src="https://img.shields.io/badge/.NET-11.0-512BD4?logo=dotnet&logoColor=white" />
   <img alt="Azure Service Bus" src="https://img.shields.io/badge/Azure-Service%20Bus-0078D4?logo=microsoftazure&logoColor=white" />
-  <img alt=".NET Aspire" src="https://img.shields.io/badge/orchestrated%20with-.NET%20Aspire-512BD4" />
+  <img alt=".NET Aspire" src="https://img.shields.io/badge/orchestrated%20with-.NET%20Aspire-512BD4?logoColor=white" />
 </p>
 
 ## What you'll learn
@@ -195,7 +195,7 @@ A successful request returns `202 Accepted` with the generated `messageId` and t
 
 ## Delivery event ingest
 
-`POST /api/deliveries` on **webfrontend** accepts a JSON [`DeliveryEvent`](ServiceBusDemo.ServiceDefaults/DeliveryEvent.cs) and returns `202 Accepted` for a valid event. The contract lives in `ServiceBusDemo.ServiceDefaults` because the Web app and both consumers already reference that project. The consumers still only log deliveries; they do not post to this endpoint yet.
+`POST /api/deliveries` on **webfrontend** accepts a JSON [`DeliveryEvent`](ServiceBusDemo.ServiceDefaults/DeliveryEvent.cs) and returns `202 Accepted` for a valid event. After logging a delivery, each consumer queues a report that includes the broker's delivery count. Each consumer can queue up to 256 reports and sends them in the background with a two-second timeout and no retries. If Web is unavailable or the reporting queue is full, reports may be lost without affecting Service Bus processing. Pending reports are discarded at shutdown.
 
 The feed keeps the most recent 200 events in memory and loses them when the Web app restarts. The endpoint is unauthenticated and intended only for the local demo. Do not expose it publicly: any caller can submit events, and the 200-event cap limits the number of entries, not the size of each event.
 
@@ -208,13 +208,13 @@ The feed keeps the most recent 200 events in memory and loses them when the Web 
 | [`ServiceBusDemo.Producer`](ServiceBusDemo.Producer/Program.cs) | HTTP API and the two `ServiceBusSender` instances. |
 | [`ServiceBusDemo.ConsumerOne`](ServiceBusDemo.ConsumerOne/MessageConsumer.cs) | Background worker listening to both topologies. |
 | [`ServiceBusDemo.ConsumerTwo`](ServiceBusDemo.ConsumerTwo/MessageConsumer.cs) | Second worker; shares one subscription and has its own broadcast subscription. |
-| [`ServiceBusDemo.Tests`](ServiceBusDemo.Tests/WebTests.cs) | Aspire integration test for the web endpoint. |
+| [`ServiceBusDemo.Tests`](ServiceBusDemo.Tests/WebTests.cs) | Aspire integration test for both messaging patterns and reporting during Web outages. |
 
 ## A few Service Bus details worth keeping in mind
 
 - A **topic** is the publish endpoint; a **subscription** is an independently consumable view of messages published to that topic.
 - A subscription is a durable messaging entity, not just a listener. Its messages remain available to that subscription until they are completed, expired, or otherwise removed under the entity's rules.
-- Competing consumers share the subscription's work. Separate subscriptions each get their own copy; adding a new subscriber means adding a new subscription.
+- Competing consumers share the subscription's work. Separate subscriptions each get their own copy. To add a new subscriber, create a new subscription.
 - Delivery is generally **at least once**. A process failure or lock expiry can result in redelivery, so real handlers should be safe to run more than once. This demo logs messages and auto-completes them; it is illustrating routing, not implementing business processing or retries.
 - This project uses Aspire's **local Service Bus emulator** for development. For Azure, provision the entities and configure the client to use an Azure namespace and an appropriate identity/credential; don't treat the local emulator as a production broker.
 

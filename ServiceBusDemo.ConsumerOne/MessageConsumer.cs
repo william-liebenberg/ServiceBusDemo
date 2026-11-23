@@ -1,12 +1,14 @@
 using System.Text;
 using Azure.Messaging.ServiceBus;
+using ServiceBusDemo.ServiceDefaults;
 
 namespace ServiceBusDemo.ConsumerOne;
 
 public sealed class MessageConsumer(
     ServiceBusClient client,
     IConfiguration configuration,
-    ILogger<MessageConsumer> logger) : BackgroundService
+    ILogger<MessageConsumer> logger,
+    DeliveryReportQueue reports) : BackgroundService
 {
     private const string ConsumerName = "ConsumerOne";
     private readonly List<ServiceBusProcessor> _processors = [];
@@ -33,6 +35,8 @@ public sealed class MessageConsumer(
 
             processor.ProcessMessageAsync += args =>
             {
+                var receivedAt = DateTimeOffset.UtcNow;
+                var body = Encoding.UTF8.GetString(args.Message.Body.ToArray());
                 logger.LogInformation(
                     "[{Pattern}] {Consumer} received message {MessageId} from {Topic}/{Subscription}: {Body}",
                     pattern,
@@ -40,7 +44,9 @@ public sealed class MessageConsumer(
                     args.Message.MessageId,
                     topic,
                     subscription,
-                    Encoding.UTF8.GetString(args.Message.Body.ToArray()));
+                    body);
+                reports.Enqueue(new DeliveryEvent(args.Message.MessageId, pattern, ConsumerName, topic,
+                    subscription, body, args.Message.DeliveryCount, receivedAt));
                 return Task.CompletedTask;
             };
 

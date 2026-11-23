@@ -9,7 +9,6 @@
     <OutputType>Exe</OutputType>
   </PropertyGroup>
 
-
   <ItemGroup>
     <PackageReference Include="Aspire.Hosting.Testing" Version="13.6.5" />
     <PackageReference Include="bunit" Version="2.15.2" />
@@ -29,6 +28,8 @@
   <ItemGroup>
     <ProjectReference Include="..\ServiceBusDemo.AppHost\ServiceBusDemo.AppHost.csproj" />
     <ProjectReference Include="..\ServiceBusDemo.Web\ServiceBusDemo.Web.csproj" />
+    <ProjectReference Include="..\ServiceBusDemo.ConsumerOne\ServiceBusDemo.ConsumerOne.csproj" />
+    <ProjectReference Include="..\ServiceBusDemo.ConsumerTwo\ServiceBusDemo.ConsumerTwo.csproj" />
   </ItemGroup>
 
   <ItemGroup>
