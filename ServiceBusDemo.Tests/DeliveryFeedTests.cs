@@ -61,32 +61,89 @@ public class DeliveryFeedTests
     }
 
     [Fact]
-    public async Task ConcurrentAddsAndSnapshotsRespectCapacity()
+    public void ClearNotifiesAfterEmptyingFeedAndPreservesEarlierSnapshots()
     {
+        var feed = new DeliveryFeed();
+        var first = CreateDelivery(1);
+        feed.Add(first);
+        var beforeClear = feed.Snapshot();
+        var notifications = 0;
+        feed.Changed += VerifyCleared;
+
+        feed.Clear();
+        feed.Clear();
+        feed.Changed -= VerifyCleared;
+        var afterClear = feed.Snapshot();
+        var later = CreateDelivery(2);
+        feed.Add(later);
+
+        Assert.Equal(2, notifications);
+        Assert.Equal(first, Assert.Single(beforeClear));
+        Assert.Empty(afterClear);
+        Assert.Equal(later, Assert.Single(feed.Snapshot()));
+
+        void VerifyCleared()
+        {
+            notifications++;
+            Assert.Empty(feed.Snapshot());
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConcurrentUpdatesAndSnapshotsRespectCapacity(bool clearConcurrently)
+    {
+        const int workerCount = 8;
+        const int reportsPerWorker = 100;
+        var token = TestContext.Current.CancellationToken;
         var feed = new DeliveryFeed();
         var notifications = 0;
         feed.Changed += () => Interlocked.Increment(ref notifications);
         var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var workers = Enumerable.Range(0, 8).Select(worker => Task.Run(async () =>
+        var workers = Enumerable.Range(0, workerCount).Select(worker => Task.Run(async () =>
         {
             await start.Task;
-            for (var index = 0; index < 100; index++)
+            for (var index = 0; index < reportsPerWorker; index++)
             {
-                feed.Add(CreateDelivery(worker * 100 + index));
+                feed.Add(CreateDelivery(worker * reportsPerWorker + index));
                 var snapshot = feed.Snapshot();
-                Assert.InRange(snapshot.Count, 1, 200);
+                Assert.InRange(snapshot.Count, clearConcurrently ? 0 : 1, 200);
                 Assert.Equal(snapshot.Count, snapshot.Distinct().Count());
             }
-        })).ToArray();
+        }, token)).ToList();
+
+        if (clearConcurrently)
+        {
+            workers.Add(Task.Run(async () =>
+            {
+                await start.Task;
+                for (var index = 0; index < reportsPerWorker; index++)
+                {
+                    feed.Clear();
+                    await Task.Yield();
+                }
+            }, token));
+        }
 
         start.SetResult();
         await Task.WhenAll(workers);
 
-        Assert.Equal(200, feed.Snapshot().Count);
-        Assert.Equal(800, notifications);
+        Assert.Equal((workerCount + (clearConcurrently ? 1 : 0)) * reportsPerWorker, notifications);
+        if (clearConcurrently)
+        {
+            feed.Clear();
+            var later = CreateDelivery(999);
+            feed.Add(later);
+            Assert.Equal(later, Assert.Single(feed.Snapshot()));
+        }
+        else
+        {
+            Assert.Equal(200, feed.Snapshot().Count);
+        }
     }
 
     private static DeliveryEvent CreateDelivery(int id) => new(
-        id.ToString(), "CompetingConsumers", "consumer-one", "business-events", "business-events", "Order placed", 1,
+        id.ToString(), "CompetingConsumers", "ConsumerOne", "business-events", "business-events", "Order placed", 1,
         DateTimeOffset.UnixEpoch);
 }

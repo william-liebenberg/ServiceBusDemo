@@ -8,7 +8,7 @@ public sealed class DeliveryFeed
     private readonly object _gate = new();
     private readonly Queue<DeliveryEvent> _deliveries = new(Capacity);
 
-    // Callbacks run outside the storage lock and may overlap on concurrent additions.
+    // Callbacks run outside the storage lock and may overlap on concurrent updates.
     public event Action? Changed;
 
     public void Add(DeliveryEvent delivery)
@@ -21,6 +21,16 @@ public sealed class DeliveryFeed
             }
 
             _deliveries.Enqueue(delivery);
+        }
+
+        Changed?.Invoke();
+    }
+
+    public void Clear()
+    {
+        lock (_gate)
+        {
+            _deliveries.Clear();
         }
 
         Changed?.Invoke();

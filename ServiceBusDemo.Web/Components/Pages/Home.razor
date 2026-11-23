@@ -1,8 +1,19 @@
 @page "/"
 @rendermode InteractiveServer
+@using ServiceBusDemo.ServiceDefaults
+@implements IDisposable
 
 @inject ProducerApiClient ProducerApi
+@inject DeliveryFeed Feed
 @inject ILogger<Home> Logger
+
+@{
+    var deliveriesByConsumer = Feed.Snapshot().ToLookup(delivery => delivery.Consumer);
+    var visibleDeliveries = consumers.SelectMany(consumer => deliveriesByConsumer[consumer.Id]);
+    var recipientsByMessage = visibleDeliveries.ToLookup(delivery => delivery.MessageId, delivery => delivery.Consumer);
+    var activeCard = hoveredCard is not null && visibleDeliveries.Contains(hoveredCard) ? hoveredCard : focusedCard;
+    var highlightedId = activeCard is not null && visibleDeliveries.Contains(activeCard) ? activeCard.MessageId : null;
+}
 
 <PageTitle>Service Bus Demo</PageTitle>
 
@@ -60,6 +71,57 @@
     </div>
 }
 
+<section class="mt-4" aria-labelledby="deliveries-heading">
+    <div class="d-flex align-items-center justify-content-between mb-2">
+        <h2 id="deliveries-heading" class="h5 mb-0">Deliveries</h2>
+        <button type="button" class="btn btn-outline-secondary btn-sm" @onclick="Feed.Clear">Clear</button>
+    </div>
+    <p class="text-body-secondary">Only recent reports are shown, across all tabs. Clear removes shared reports, not sent history.</p>
+    <div class="delivery-lanes">
+        @foreach (var consumer in consumers)
+        {
+            var deliveries = deliveriesByConsumer[consumer.Id];
+            <section id="@consumer.Id" aria-labelledby="@(consumer.Id + "-heading")">
+                <h3 id="@(consumer.Id + "-heading")" class="h6">@consumer.Label</h3>
+                @if (!deliveries.Any())
+                {
+                    <p class="text-body-secondary">No deliveries reported.</p>
+                }
+                @{ var occurrences = new Dictionary<DeliveryEvent, int>(); }
+                @foreach (var delivery in deliveries.Reverse())
+                {
+                    // Even identical reports need separate cards. Keep existing keys stable when other reports arrive.
+                    var occurrence = occurrences.GetValueOrDefault(delivery);
+                    occurrences[delivery] = occurrence + 1;
+                    var cardKey = (delivery, occurrence);
+                    var receivedAt = delivery.ReceivedAt.ToLocalTime();
+                    var patternClass = delivery.Pattern switch
+                    {
+                        nameof(MessagingPattern.CompetingConsumers) => "pattern-competing",
+                        nameof(MessagingPattern.PubSub) => "pattern-pubsub",
+                        _ => ""
+                    };
+                    <article @key="cardKey" class="delivery-card @patternClass @(delivery.MessageId == highlightedId ? "delivery-highlighted" : "")"
+                             tabindex="0" @onmouseenter="() => hoveredCard = delivery" @onmouseleave="() => hoveredCard = null"
+                             @onfocus="() => focusedCard = delivery" @onblur="() => focusedCard = null">
+                        <strong class="delivery-pattern">@PatternLabel(delivery.Pattern)</strong>
+                        <dl class="mb-0 mt-2">
+                            <dt>Subscription</dt>
+                            <dd><code>@delivery.Subscription</code></dd>
+                            <dt>Message ID</dt>
+                            <dd><code>@delivery.MessageId</code></dd>
+                            <dt>Body</dt>
+                            <dd class="delivery-body">@delivery.Body</dd>
+                            <dt>Received (local)</dt>
+                            <dd class="mb-0"><time datetime="@receivedAt.ToString("O")">@receivedAt.ToString("G")</time></dd>
+                        </dl>
+                    </article>
+                }
+            </section>
+        }
+    </div>
+</section>
+
 @if (sentMessages.Count > 0)
 {
     <h2 class="h5 mt-4">Sent this session</h2>
@@ -71,17 +133,22 @@
                 <th>Topic</th>
                 <th>Message ID</th>
                 <th>Message</th>
+                <th>Consumers</th>
             </tr>
         </thead>
         <tbody>
             @foreach (var sent in sentMessages)
             {
+                var recipients = recipientsByMessage[sent.MessageId];
+                var recipientLabels = string.Join(", ", consumers.Where(consumer => recipients.Contains(consumer.Id))
+                    .Select(consumer => consumer.Label));
                 <tr>
                     <td>@sent.SentAt.ToLocalTime().ToString("T")</td>
                     <td>@(sent.Pattern == MessagingPattern.PubSub ? "Pub/sub" : "Competing consumers")</td>
                     <td><code>@sent.Topic</code></td>
                     <td><code>@sent.MessageId</code></td>
                     <td>@sent.Message</td>
+                    <td>@(recipientLabels.Length > 0 ? recipientLabels : "None reported")</td>
                 </tr>
             }
         </tbody>
@@ -89,11 +156,64 @@
 }
 
 @code {
+    private static readonly (string Id, string Label)[] consumers =
+        [("ConsumerOne", "Consumer One"), ("ConsumerTwo", "Consumer Two")];
+
     private readonly MessageModel model = new();
     private readonly List<SentMessage> sentMessages = [];
+    private DeliveryEvent? hoveredCard;
+    private DeliveryEvent? focusedCard;
+    private volatile bool disposed;
     private bool isSending;
     private bool isError;
     private string? statusMessage;
+
+    protected override void OnInitialized() => Feed.Changed += OnFeedChanged;
+
+    private void OnFeedChanged() => _ = RefreshDeliveriesAsync();
+
+    private async Task RefreshDeliveriesAsync()
+    {
+        if (disposed)
+        {
+            return;
+        }
+
+        try
+        {
+            await InvokeAsync(() =>
+            {
+                if (!disposed)
+                {
+                    StateHasChanged();
+                }
+            });
+        }
+        catch (ObjectDisposedException)
+        {
+            // Renderer teardown can race with a feed notification.
+        }
+        catch (Exception ex)
+        {
+            if (!disposed)
+            {
+                Logger.LogError(ex, "Failed to refresh live deliveries");
+            }
+        }
+    }
+
+    public void Dispose()
+    {
+        disposed = true;
+        Feed.Changed -= OnFeedChanged;
+    }
+
+    private static string PatternLabel(string pattern) => pattern switch
+    {
+        nameof(MessagingPattern.CompetingConsumers) => "Competing consumers",
+        nameof(MessagingPattern.PubSub) => "Publish/subscribe",
+        _ => pattern
+    };
 
     private async Task SendAsync()
     {
