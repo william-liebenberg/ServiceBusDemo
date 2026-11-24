@@ -36,6 +36,12 @@ public partial class Home
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
+        if (firstRender && !disposed)
+        {
+            // Only poll once the page is interactive, not during prerendering.
+            _ = PollConsumersAsync(pageLifetime.Token);
+        }
+
         if (focusAfterRender is not { } target || disposed)
         {
             return;

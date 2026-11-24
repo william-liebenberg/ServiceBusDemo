@@ -369,6 +369,7 @@ public class HomeBurstTests
             Context.JSInterop.SetupVoid("Blazor._internal.NavigationLock.enableNavigationPrompt", _ => true).SetVoidResult();
             Context.JSInterop.SetupVoid("Blazor._internal.NavigationLock.disableNavigationPrompt", _ => true).SetVoidResult();
             Context.Services.AddSingleton(new ProducerApiClient(_client));
+            Context.Services.AddControlTestClients();
             Context.Services.AddSingleton(Feed);
             Home = Context.Render<Home>();
             Assert.Equal("10", Home.Find("#burst-count").GetAttribute("value"));

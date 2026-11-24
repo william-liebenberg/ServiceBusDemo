@@ -161,8 +161,19 @@
         @foreach (var consumer in consumers)
         {
             var cards = deliveriesByConsumer[consumer.Id];
+            var lane = LaneFor(consumer.Id);
             <section id="@consumer.Id" aria-labelledby="@(consumer.Id + "-heading")">
                 <h3 id="@(consumer.Id + "-heading")" class="h6">@consumer.Label</h3>
+                <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+                    <span class="badge text-bg-secondary consumer-status" role="status" aria-atomic="true">
+                        <span class="visually-hidden">@consumer.Label status: </span><span class="consumer-state">@lane.Badge</span>
+                    </span>
+                    <button type="button" class="btn btn-outline-secondary btn-sm consumer-pause" aria-label="Pause @consumer.Label"
+                            disabled="@lane.ActionDisabled(true)" @onclick="() => ChangeConsumerAsync(consumer.Id, true)">Pause</button>
+                    <button type="button" class="btn btn-outline-secondary btn-sm consumer-resume" aria-label="Resume @consumer.Label"
+                            disabled="@lane.ActionDisabled(false)" @onclick="() => ChangeConsumerAsync(consumer.Id, false)">Resume</button>
+                </div>
+                <div class="text-danger-emphasis consumer-error" role="status">@(lane.ActionError ?? lane.RefreshError)</div>
                 @if (!cards.Any())
                 {
                     <p class="text-body-secondary">No deliveries reported.</p>

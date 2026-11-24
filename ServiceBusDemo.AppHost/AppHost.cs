@@ -33,7 +33,7 @@ var webfrontend = builder.AddProject<Projects.ServiceBusDemo_Web>("webfrontend")
     .WithParentRelationship(producer)
     .WaitFor(producer);
 
-builder.AddProject<Projects.ServiceBusDemo_ConsumerOne>("consumer-one")
+var consumerOne = builder.AddProject<Projects.ServiceBusDemo_ConsumerOne>("consumer-one")
     .WithHttpHealthCheck("/health")
     .WithReference(asb)
     .WithReference(webfrontend)
@@ -44,7 +44,7 @@ builder.AddProject<Projects.ServiceBusDemo_ConsumerOne>("consumer-one")
     .WaitFor(beSub)
     .WaitFor(consumerOneBroadcastSub);
 
-builder.AddProject<Projects.ServiceBusDemo_ConsumerTwo>("consumer-two")
+var consumerTwo = builder.AddProject<Projects.ServiceBusDemo_ConsumerTwo>("consumer-two")
     .WithHttpHealthCheck("/health")
     .WithReference(asb)
     .WithReference(webfrontend)
@@ -54,5 +54,8 @@ builder.AddProject<Projects.ServiceBusDemo_ConsumerTwo>("consumer-two")
     .WithEnvironment("ServiceBus__BroadcastSubscriptionName", consumerTwoBroadcastSub.Resource.SubscriptionName)
     .WaitFor(beSub)
     .WaitFor(consumerTwoBroadcastSub);
+
+// Discovery only: the Web can start independently of the consumers.
+webfrontend.WithReference(consumerOne).WithReference(consumerTwo);
 
 builder.Build().Run();

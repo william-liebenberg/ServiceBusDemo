@@ -86,6 +86,9 @@ public class WebTests
         await WaitForReportsAsync(reports, broadcast, 2, token);
 
         await VerifyBurstsAsync(producer, observedFeed, token);
+        using var one = app.CreateHttpClient("consumer-one", "http");
+        using var two = app.CreateHttpClient("consumer-two", "http");
+        await VerifyConsumerControlAsync(producer, new ConsumerOneControlClient(one), new ConsumerTwoControlClient(two), reports, token);
 
         var commandService = app.Services.GetRequiredService<ResourceCommandService>();
         var stop = await commandService.ExecuteCommandAsync("webfrontend", "resource-stop", token);
@@ -114,6 +117,53 @@ public class WebTests
         Assert.All(reports, report => Assert.Equal(1, report.Delivery.DeliveryCount));
     }
 
+    private static async Task VerifyConsumerControlAsync(HttpClient producer, ConsumerOneControlClient one,
+        ConsumerTwoControlClient two, ConcurrentQueue<(DeliveryEvent Delivery, HttpStatusCode Status)> reports, CancellationToken token)
+    {
+        Assert.Equal(ConsumerState.Paused, (await two.PauseAsync(token)).State);
+        Assert.Equal(ConsumerState.Running, (await one.GetStatusAsync(token)).State);
+        var failover = new[] { await PublishAsync(producer, "/sendMessage", token), await PublishAsync(producer, "/sendMessage", token) };
+        foreach (var id in failover)
+        {
+            await WaitForReportsAsync(reports, id, 1, token);
+            AssertFromOne(id);
+        }
+
+        Assert.Equal(ConsumerState.Paused, (await one.PauseAsync(token)).State);
+        Assert.Equal(ConsumerState.Paused, (await two.GetStatusAsync(token)).State);
+        var backlog = new[] { await PublishAsync(producer, "/sendMessage", token), await PublishAsync(producer, "/sendMessage", token) };
+        // Give any incorrectly active processor a chance to report before resuming.
+        await Task.Delay(TimeSpan.FromSeconds(1), token);
+        Assert.DoesNotContain(reports, report => backlog.Contains(report.Delivery.MessageId));
+        Assert.Equal(ConsumerState.Running, (await one.ResumeAsync(token)).State);
+        foreach (var id in backlog)
+        {
+            await WaitForReportsAsync(reports, id, 1, token);
+            AssertFromOne(id);
+        }
+
+        var fanout = await PublishAsync(producer, "/broadcastMessage", token);
+        await WaitForReportsAsync(reports, fanout, 1, token);
+        AssertFromOne(fanout);
+        Assert.Equal(ConsumerState.Paused, (await two.GetStatusAsync(token)).State);
+        Assert.Equal(ConsumerState.Running, (await two.ResumeAsync(token)).State);
+        await WaitForReportsAsync(reports, fanout, 2, token);
+        var copies = reports.Where(report => report.Delivery.MessageId == fanout).ToArray();
+        Assert.All(copies, copy => Assert.Equal(HttpStatusCode.Accepted, copy.Status));
+        AssertFanout(copies.Select(copy => copy.Delivery));
+        foreach (var id in failover.Concat(backlog))
+        {
+            AssertFromOne(id);
+        }
+
+        void AssertFromOne(string id)
+        {
+            var report = Assert.Single(reports, item => item.Delivery.MessageId == id);
+            Assert.Equal(HttpStatusCode.Accepted, report.Status);
+            Assert.Equal("ConsumerOne", report.Delivery.Consumer);
+        }
+    }
+
     private static async Task VerifyBurstsAsync(HttpClient producer, DeliveryFeed feed, CancellationToken token)
     {
         await using var context = new BunitContext();
@@ -121,6 +171,7 @@ public class WebTests
         context.JSInterop.SetupVoid("Blazor._internal.NavigationLock.enableNavigationPrompt", _ => true).SetVoidResult();
         context.JSInterop.SetupVoid("Blazor._internal.NavigationLock.disableNavigationPrompt", _ => true).SetVoidResult();
         context.Services.AddSingleton(new ProducerApiClient(producer));
+        context.Services.AddControlTestClients();
         context.Services.AddSingleton(feed);
         var home = context.Render<Home>();
         home.Find("#message").Change("Aspire burst smoke test");
