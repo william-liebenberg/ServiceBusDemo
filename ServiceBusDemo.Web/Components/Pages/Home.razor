@@ -1,8 +1,27 @@
 @page "/"
 @rendermode InteractiveServer
+@using ServiceBusDemo.ServiceDefaults
+@implements IDisposable
 
 @inject ProducerApiClient ProducerApi
+@inject DeliveryFeed Feed
 @inject ILogger<Home> Logger
+
+@{
+    var snapshot = Feed.Snapshot(out var reportCount, out var clearCount);
+    // Retained reports are a contiguous suffix of the insertion sequence, even after a clear.
+    var firstSequence = reportCount - snapshot.Count + 1;
+    var deliveriesByConsumer = snapshot.Select((delivery, index) => new DeliveryCard(firstSequence + index, delivery))
+        .ToLookup(card => card.Delivery.Consumer);
+    var visibleCards = consumers.SelectMany(consumer => deliveriesByConsumer[consumer.Id]).ToArray();
+    var cardsByMessage = visibleCards.ToLookup(card => card.Delivery.MessageId);
+    var hover = hoveredCard?.Card.Sequence >= firstSequence ? hoveredCard : null;
+    var focus = focusedCard?.Card.Sequence >= firstSequence ? focusedCard : null;
+    // Correlate only the most recent interaction that is still active and visible.
+    var active = focus is null || hover?.Order > focus.Order ? hover : focus;
+    var highlightedId = active?.Card.Delivery.MessageId;
+    UpdateDeliveryStatus(visibleCards, reportCount, clearCount);
+}
 
 <PageTitle>Service Bus Demo</PageTitle>
 
@@ -60,40 +79,202 @@
     </div>
 }
 
+<section class="deliveries mt-4" aria-labelledby="deliveries-heading">
+    <div class="d-flex align-items-center justify-content-between mb-2">
+        <h2 id="deliveries-heading" class="h5 mb-0">Deliveries</h2>
+        <button type="button" class="btn btn-outline-secondary btn-sm" @onclick="Feed.Clear">Clear</button>
+    </div>
+    <p class="text-body-secondary">Only recent reports are shown, across all tabs. Clear removes shared reports, not sent history.</p>
+    <div id="delivery-status" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true">
+        <span @key="deliveryStatusVersion">@deliveryStatus</span>
+    </div>
+    <div class="delivery-lanes">
+        @foreach (var consumer in consumers)
+        {
+            var cards = deliveriesByConsumer[consumer.Id];
+            <section id="@consumer.Id" aria-labelledby="@(consumer.Id + "-heading")">
+                <h3 id="@(consumer.Id + "-heading")" class="h6">@consumer.Label</h3>
+                @if (!cards.Any())
+                {
+                    <p class="text-body-secondary">No deliveries reported.</p>
+                }
+                @foreach (var card in cards.Reverse())
+                {
+                    var delivery = card.Delivery;
+                    var matchCount = cardsByMessage[delivery.MessageId].Count() - 1;
+                    var matchDescriptionId = $"delivery-matches-{card.Sequence}";
+                    var isHighlighted = active is not null && delivery.MessageId == highlightedId;
+                    var receivedAt = delivery.ReceivedAt.ToLocalTime();
+                    var patternClass = delivery.Pattern switch
+                    {
+                        nameof(MessagingPattern.CompetingConsumers) => "pattern-competing",
+                        nameof(MessagingPattern.PubSub) => "pattern-pubsub",
+                        _ => ""
+                    };
+                    <article @key="card.Sequence" class="delivery-card @patternClass @(isHighlighted ? "delivery-highlighted" : "")"
+                             tabindex="0" aria-label="Delivery to @consumer.Label" aria-describedby="@matchDescriptionId"
+                             @onmouseenter="() => hoveredCard = new(card, ++interactionOrder)"
+                             @onmouseleave="() => EndInteraction(ref hoveredCard, card)"
+                             @onfocus="() => focusedCard = new(card, ++interactionOrder)"
+                             @onblur="() => EndInteraction(ref focusedCard, card)">
+                        <span id="@matchDescriptionId" class="visually-hidden">@MatchDescription(matchCount)</span>
+                        <strong class="delivery-pattern">@PatternLabel(delivery.Pattern)</strong>
+                        <dl class="mb-0 mt-2">
+                            <dt>Subscription</dt>
+                            <dd><code>@delivery.Subscription</code></dd>
+                            <dt>Message ID</dt>
+                            <dd><code>@delivery.MessageId</code></dd>
+                            <dt>Body</dt>
+                            <dd class="delivery-body">@delivery.Body</dd>
+                            <dt>Received (local time)</dt>
+                            <dd class="mb-0"><time datetime="@receivedAt.ToString("O")">@receivedAt.ToString("G") (UTC@(receivedAt.ToString("zzz")))</time></dd>
+                        </dl>
+                    </article>
+                }
+            </section>
+        }
+    </div>
+</section>
+
 @if (sentMessages.Count > 0)
 {
-    <h2 class="h5 mt-4">Sent this session</h2>
-    <table class="table table-sm">
-        <thead>
-            <tr>
-                <th>Sent</th>
-                <th>Pattern</th>
-                <th>Topic</th>
-                <th>Message ID</th>
-                <th>Message</th>
-            </tr>
-        </thead>
-        <tbody>
-            @foreach (var sent in sentMessages)
-            {
+    <h2 id="sent-heading" class="h5 mt-4">Sent this session</h2>
+    <p id="sent-consumers-note" class="text-body-secondary">Consumers reflect retained reports only and may be incomplete.</p>
+    <div class="table-responsive" role="region" tabindex="0" aria-labelledby="sent-heading" aria-describedby="sent-consumers-note">
+        <table class="table table-sm">
+            <thead>
                 <tr>
-                    <td>@sent.SentAt.ToLocalTime().ToString("T")</td>
-                    <td>@(sent.Pattern == MessagingPattern.PubSub ? "Pub/sub" : "Competing consumers")</td>
-                    <td><code>@sent.Topic</code></td>
-                    <td><code>@sent.MessageId</code></td>
-                    <td>@sent.Message</td>
+                    <th>Sent</th>
+                    <th>Pattern</th>
+                    <th>Topic</th>
+                    <th>Message ID</th>
+                    <th>Message</th>
+                    <th>Consumers</th>
                 </tr>
-            }
-        </tbody>
-    </table>
+            </thead>
+            <tbody>
+                @foreach (var sent in sentMessages)
+                {
+                    var reportedCards = cardsByMessage[sent.MessageId];
+                    var recipientLabels = string.Join(", ", consumers.Where(consumer => reportedCards.Any(card => card.Delivery.Consumer == consumer.Id))
+                        .Select(consumer => consumer.Label));
+                    <tr>
+                        <td>@sent.SentAt.ToLocalTime().ToString("T")</td>
+                        <td>@(sent.Pattern == MessagingPattern.PubSub ? "Pub/sub" : "Competing consumers")</td>
+                        <td><code>@sent.Topic</code></td>
+                        <td><code>@sent.MessageId</code></td>
+                        <td>@sent.Message</td>
+                        <td>@(recipientLabels.Length > 0 ? recipientLabels : "None reported")</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
 }
 
 @code {
+    private static readonly (string Id, string Label)[] consumers =
+        [("ConsumerOne", "Consumer One"), ("ConsumerTwo", "Consumer Two")];
+
     private readonly MessageModel model = new();
     private readonly List<SentMessage> sentMessages = [];
+    private CardInteraction? hoveredCard;
+    private CardInteraction? focusedCard;
+    private long interactionOrder;
+    private long? lastReportCount;
+    private long lastClearCount;
+    private long deliveryStatusVersion;
+    private string? deliveryStatus;
+    private volatile bool disposed;
     private bool isSending;
     private bool isError;
     private string? statusMessage;
+
+    protected override void OnInitialized() => Feed.Changed += OnFeedChanged;
+
+    private void OnFeedChanged() => _ = RefreshDeliveriesAsync();
+
+    private async Task RefreshDeliveriesAsync()
+    {
+        if (disposed)
+        {
+            return;
+        }
+
+        try
+        {
+            await InvokeAsync(() =>
+            {
+                if (!disposed)
+                {
+                    StateHasChanged();
+                }
+            });
+        }
+        catch (ObjectDisposedException)
+        {
+            // Renderer teardown can race with a feed notification.
+        }
+        catch (Exception ex)
+        {
+            if (!disposed)
+            {
+                Logger.LogError(ex, "Failed to refresh live deliveries");
+            }
+        }
+    }
+
+    public void Dispose()
+    {
+        disposed = true;
+        Feed.Changed -= OnFeedChanged;
+    }
+
+    private void UpdateDeliveryStatus(DeliveryCard[] visibleCards, long reportCount, long clearCount)
+    {
+        if (lastReportCount is long previousReportCount)
+        {
+            var newReports = visibleCards.Count(card => card.Sequence > previousReportCount);
+            var cleared = clearCount != lastClearCount;
+            if (cleared || newReports > 0)
+            {
+                var arrival = newReports switch
+                {
+                    0 => "",
+                    1 => "1 new delivery report.",
+                    _ => $"{newReports} new delivery reports."
+                };
+                deliveryStatus = cleared ? $"Delivery reports cleared. {arrival}".TrimEnd() : arrival;
+                // Replace the child even for identical consecutive announcements, keeping the live region mounted.
+                deliveryStatusVersion++;
+            }
+        }
+
+        lastReportCount = reportCount;
+        lastClearCount = clearCount;
+    }
+
+    private static void EndInteraction(ref CardInteraction? interaction, DeliveryCard card)
+    {
+        if (interaction?.Card.Sequence == card.Sequence)
+        {
+            interaction = null;
+        }
+    }
+
+    private static string MatchDescription(int matches) => matches switch
+    {
+        0 => "No other visible reports for this message.",
+        1 => "1 other visible report for this message.",
+        _ => $"{matches} other visible reports for this message."
+    };
+
+    private static string PatternLabel(string pattern) => pattern switch
+    {
+        nameof(MessagingPattern.CompetingConsumers) => "Competing consumers",
+        nameof(MessagingPattern.PubSub) => "Publish/subscribe",
+        _ => pattern
+    };
 
     private async Task SendAsync()
     {
@@ -131,5 +312,7 @@
         public MessagingPattern Pattern { get; set; } = MessagingPattern.CompetingConsumers;
     }
 
+    private sealed record DeliveryCard(long Sequence, DeliveryEvent Delivery);
+    private sealed record CardInteraction(DeliveryCard Card, long Order);
     private sealed record SentMessage(string MessageId, MessagingPattern Pattern, string Topic, string Message, DateTimeOffset SentAt);
 }
