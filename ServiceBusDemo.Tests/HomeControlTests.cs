@@ -92,6 +92,56 @@ public class HomeControlTests
         Assert.Equal(2, twoPosts);
     }
 
+    [Fact]
+    public async Task PollStartedBeforePauseCannotOverwriteConfirmedPause()
+    {
+        var token = XunitTestContext.Current.CancellationToken;
+        var stalePollStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseStalePoll = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var nextPollStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var statusReads = 0;
+        await using var context = CreateContext(async (request, ct) =>
+        {
+            if (request.RequestUri!.Host == "consumer-two.test")
+            {
+                Assert.Equal(HttpMethod.Get, request.Method);
+                return ControlTestClients.Reply("ConsumerTwo", ConsumerState.Running);
+            }
+            if (request.Method == HttpMethod.Post)
+            {
+                Assert.Equal("/control/pause", request.RequestUri.AbsolutePath);
+                return ControlTestClients.Reply("ConsumerOne", ConsumerState.Paused);
+            }
+
+            Assert.Equal("/control/status", request.RequestUri.AbsolutePath);
+            switch (Interlocked.Increment(ref statusReads))
+            {
+                case 1:
+                    return ControlTestClients.Reply("ConsumerOne", ConsumerState.Running);
+                case 2:
+                    stalePollStarted.SetResult();
+                    await releaseStalePoll.Task.WaitAsync(ct);
+                    return ControlTestClients.Reply("ConsumerOne", ConsumerState.Running);
+                default:
+                    nextPollStarted.TrySetResult();
+                    // Leave this read pending so a fresh Paused response cannot mask a stale overwrite.
+                    await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+                    throw new InvalidOperationException("Expected page disposal to cancel status polling.");
+            }
+        });
+        var home = context.Render<Home>();
+        home.WaitForAssertion(() => Assert.Equal("Running", State(home, "ConsumerOne")), Deadline);
+        await stalePollStarted.Task.WaitAsync(Deadline, token);
+
+        await home.Find("#ConsumerOne .consumer-pause").ClickAsync(new()).WaitAsync(Deadline, token);
+        Assert.Equal("Paused", State(home, "ConsumerOne"));
+        releaseStalePoll.SetResult();
+
+        // The same lane polls serially, so starting another read confirms the stale response was handled.
+        await nextPollStarted.Task.WaitAsync(Deadline, token);
+        Assert.Equal("Paused", State(home, "ConsumerOne"));
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
