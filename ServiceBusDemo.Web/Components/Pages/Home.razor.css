@@ -16,6 +16,10 @@
     max-inline-size: 9rem;
 }
 
+.burst-controls button[aria-disabled="true"] {
+    opacity: var(--bs-btn-disabled-opacity);
+}
+
 .burst-bar {
     display: block;
     inline-size: 100%;

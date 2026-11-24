@@ -43,7 +43,7 @@ public class WebTests
             {
                 status = HttpStatusCode.ServiceUnavailable;
             }
-            catch (OperationCanceledException) when (requestToken.IsCancellationRequested)
+            catch (OperationCanceledException) when (!token.IsCancellationRequested)
             {
                 status = HttpStatusCode.GatewayTimeout;
             }
@@ -117,19 +117,20 @@ public class WebTests
     private static async Task VerifyBurstsAsync(HttpClient producer, DeliveryFeed feed, CancellationToken token)
     {
         await using var context = new BunitContext();
+        context.JSInterop.SetupVoid("Blazor._internal.domWrapper.focus", _ => true).SetVoidResult();
         context.Services.AddSingleton(new ProducerApiClient(producer));
         context.Services.AddSingleton(feed);
         var home = context.Render<Home>();
         home.Find("#message").Change("Aspire burst smoke test");
         home.Find("#burst-count").Input("3");
 
-        await home.Find("#send-burst").ClickAsync(new()).WaitAsync(token);
+        await home.Find("#burst-form").SubmitAsync().WaitAsync(token);
         home.WaitForAssertion(() => Assert.Equal("Reported deliveries: 3 / 3 expected", home.Find("#burst-total").TextContent),
             TimeSpan.FromSeconds(15));
 
         var pubSub = home.Find("#pattern-pubsub");
         pubSub.Change(((IHtmlInputElement)pubSub).Value);
-        await home.Find("#send-burst").ClickAsync(new()).WaitAsync(token);
+        await home.Find("#burst-form").SubmitAsync().WaitAsync(token);
         home.WaitForAssertion(() => Assert.Equal("Reported deliveries: 6 / 6 expected", home.Find("#burst-total").TextContent),
             TimeSpan.FromSeconds(15));
         Assert.Equal("3", home.Find("#burst-ConsumerOne").GetAttribute("value"));
@@ -139,7 +140,7 @@ public class WebTests
         await home.Find("#burst-paced").ChangeAsync(new() { Value = true });
         var rate = home.WaitForElement("#burst-rate");
         await rate.InputAsync(new() { Value = "1" });
-        var sending = home.Find("#send-burst").ClickAsync(new());
+        var sending = home.Find("#burst-form").SubmitAsync();
         home.WaitForAssertion(() => Assert.InRange(int.Parse(home.Find("#burst-progress[max='20']").GetAttribute("value")!), 1, 19),
             TimeSpan.FromSeconds(15));
         await home.Find("#cancel-burst").ClickAsync(new()).WaitAsync(token);

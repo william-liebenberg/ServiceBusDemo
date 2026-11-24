@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Globalization;
-using Microsoft.AspNetCore.Components.Forms;
+using Microsoft.AspNetCore.Components;
+using Microsoft.AspNetCore.Components.Web;
+using Microsoft.JSInterop;
 
 namespace ServiceBusDemo.Web.Components.Pages;
 
@@ -17,17 +19,37 @@ public partial class Home
     private string? burstStatus;
     private string? countError;
     private string? rateError;
+    private ElementReference burstAction;
+    private bool focusBurstAction;
 
     private bool Busy => isSending || burstDelay is not null;
 
-    private async Task SendBurstAsync(EditContext editContext)
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!focusBurstAction || disposed)
+        {
+            return;
+        }
+
+        focusBurstAction = false;
+        try
+        {
+            await burstAction.FocusAsync(preventScroll: true);
+        }
+        catch (JSDisconnectedException)
+        {
+            // The browser can disconnect between rendering the action and focusing it.
+        }
+    }
+
+    private async Task SendBurstAsync()
     {
         if (disposed || Busy)
         {
             return;
         }
 
-        var messageValid = await editContext.ValidateAsync();
+        var messageValid = await messageContext.ValidateAsync();
         if (disposed || Busy)
         {
             return;
@@ -54,9 +76,10 @@ public partial class Home
         cancelPending = false;
         using var delay = new CancellationTokenSource();
         burstDelay = delay;
+        focusBurstAction = true;
         var requestToken = pageLifetime.Token;
-        var spacing = rate == 0 ? TimeSpan.Zero : TimeSpan.FromSeconds(1d / rate);
-        long previousStart = 0;
+        var spacing = rate == 0 ? TimeSpan.Zero : TimeSpan.FromTicks((long)Math.Ceiling((double)TimeSpan.TicksPerSecond / rate));
+        long previousResponse = 0;
 
         try
         {
@@ -64,8 +87,8 @@ public partial class Home
             {
                 if (index > 0 && spacing > TimeSpan.Zero)
                 {
-                    // Recheck the monotonic clock in case a timer wakes early.
-                    while (spacing - Stopwatch.GetElapsedTime(previousStart) is { Ticks: > 0 } remaining)
+                    // Wait from the acknowledgement, not from client invocation: request setup can delay the actual start.
+                    while (spacing - Stopwatch.GetElapsedTime(previousResponse) is { Ticks: > 0 } remaining)
                     {
                         await Task.Delay(TimeSpan.FromMilliseconds(Math.Ceiling(remaining.TotalMilliseconds)), delay.Token);
                     }
@@ -77,11 +100,11 @@ public partial class Home
                 }
 
                 tracker.BeginRequest();
-                previousStart = Stopwatch.GetTimestamp();
                 SendMessageResult result;
                 try
                 {
                     result = await ProducerApi.SendMessageAsync(message, pattern, requestToken);
+                    previousResponse = Stopwatch.GetTimestamp();
                     if (string.IsNullOrWhiteSpace(result.MessageId))
                     {
                         throw new InvalidOperationException("Producer API returned no message ID.");

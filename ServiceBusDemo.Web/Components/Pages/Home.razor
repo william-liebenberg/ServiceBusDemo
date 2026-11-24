@@ -29,7 +29,7 @@
 
 <p>Publish a message to Azure Service Bus via the producer API, choosing which messaging pattern to demonstrate.</p>
 
-<EditForm Model="model" OnValidSubmit="SendAsync" FormName="send-message">
+<EditForm EditContext="messageContext" OnValidSubmit="SendAsync" FormName="send-message">
     <DataAnnotationsValidator />
 
     <fieldset class="mb-3" disabled="@Busy">
@@ -70,10 +70,12 @@
             <span>Send</span>
         }
     </button>
+</EditForm>
 
-    <fieldset class="burst-controls mt-3" disabled="@Busy">
+<form id="burst-form" @formname="send-burst" @onsubmit="SendBurstAsync" @onsubmit:preventDefault>
+    <fieldset class="burst-controls mt-3">
         <legend class="h5">Burst sender</legend>
-        <div class="burst-inputs">
+        <fieldset class="burst-inputs" disabled="@Busy" aria-label="Burst settings">
             <div>
                 <label for="burst-count" class="form-label">Count (1–500)</label>
                 <input id="burst-count" class="form-control" inputmode="numeric" @bind="burstCount" @bind:event="oninput"
@@ -93,14 +95,15 @@
                     <div id="burst-rate-error" class="validation-message" aria-live="polite">@rateError</div>
                 }
             </div>
-        </div>
-        <button id="send-burst" type="button" class="btn btn-primary" disabled="@Busy" @onclick="() => SendBurstAsync(context)">Send burst</button>
+        </fieldset>
+        @* Keep this node mounted and focusable through cancellation and completion. *@
+        <button id="@(burstDelay is null ? "send-burst" : "cancel-burst")" type="@(burstDelay is null ? "submit" : "button")"
+                class="btn @(burstDelay is null ? "btn-primary" : "btn-outline-secondary")" disabled="@isSending"
+                aria-disabled="@(cancelPending ? "true" : null)" @onclick="CancelBurst" @ref="burstAction">
+            @(burstDelay is null ? "Send burst" : "Cancel burst")
+        </button>
     </fieldset>
-    @if (burstDelay is not null)
-    {
-        <button id="cancel-burst" type="button" class="btn btn-outline-secondary mt-2" disabled="@cancelPending" @onclick="CancelBurst">Cancel burst</button>
-    }
-</EditForm>
+</form>
 
 @if (statusMessage is not null)
 {
@@ -124,7 +127,7 @@
             var count = consumer.Id == BurstDeliveryTracker.ConsumerOneId ? stats.ConsumerOne : stats.ConsumerTwo;
             var barId = $"burst-{consumer.Id}";
             <label for="@barId">@consumer.Label: @count</label>
-            <progress id="@barId" class="burst-bar" max="@Math.Max(1, stats.Sent)" value="@count"></progress>
+            <progress id="@barId" class="burst-bar" max="@Math.Max(1, Math.Max(stats.Sent, count))" value="@count"></progress>
         }
         @if (stats.Overflowed)
         {
@@ -233,6 +236,7 @@
         [(BurstDeliveryTracker.ConsumerOneId, "Consumer One"), (BurstDeliveryTracker.ConsumerTwoId, "Consumer Two")];
 
     private readonly MessageModel model = new();
+    private EditContext messageContext = default!;
     private readonly List<SentMessage> sentMessages = [];
     private CardInteraction? hoveredCard;
     private CardInteraction? focusedCard;
@@ -246,7 +250,11 @@
     private bool isError;
     private string? statusMessage;
 
-    protected override void OnInitialized() => Feed.Changed += OnFeedChanged;
+    protected override void OnInitialized()
+    {
+        messageContext = new EditContext(model);
+        Feed.Changed += OnFeedChanged;
+    }
 
     private void OnFeedChanged() => _ = RefreshDeliveriesAsync();
 

@@ -85,6 +85,39 @@ public class HomeBurstTests
         Assert.Equal(0, demo.Handler.RequestCount);
     }
 
+    [Theory]
+    [InlineData("count")]
+    [InlineData("rate")]
+    public async Task ImplicitSubmissionFromBurstFieldValidatesAndStartsOnlyABurst(string field)
+    {
+        await using var demo = new Demo();
+        demo.Pace("1000");
+        demo.Home.Find("#burst-count").Input("2");
+        var selector = $"#burst-{field}";
+        var input = (IHtmlInputElement)demo.Home.Find(selector);
+        var form = Assert.IsAssignableFrom<IHtmlFormElement>(input.Form);
+        Assert.Equal("burst-form", form.Id);
+        Assert.Equal("send-burst", Assert.Single(form.QuerySelectorAll("button[type=submit]")).Id);
+        Assert.NotEqual(form.Id, ((IHtmlTextAreaElement)demo.Home.Find("#message")).Form!.Id);
+
+        // bUnit does not execute the browser's Enter default action. Exercise the submit
+        // event on the input's actual form, which the browser's default button dispatches.
+        var formSelector = $"#{form.Id}";
+        demo.Home.Find(selector).Input("invalid");
+        await demo.Home.Find(formSelector).SubmitAsync();
+        Assert.Equal(0, demo.Handler.RequestCount);
+        Assert.Equal("true", demo.Home.Find(selector).GetAttribute("aria-invalid"));
+
+        demo.Home.Find(selector).Input("2");
+        var sending = demo.Home.Find(formSelector).SubmitAsync();
+        (await demo.Handler.NextAsync()).Accept("first");
+        (await demo.Handler.NextAsync()).Accept("second");
+        await sending.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        Assert.Equal("2", demo.Progress);
+        Assert.Equal("Burst complete.", demo.Status);
+        Assert.Empty(demo.Home.FindAll(".alert-success"));
+    }
+
     [Fact]
     public async Task SharedMessageValidationAppliesToBurstAndBurstErrorsDoNotBlockSingleSend()
     {
@@ -126,24 +159,48 @@ public class HomeBurstTests
     }
 
     [Fact]
+    public async Task FixedRateStillSpacesStartsWhenFirstRequestSetupIsDelayed()
+    {
+        await using var demo = new Demo(new DelayFirstRequest(TimeSpan.FromMilliseconds(350)));
+        demo.Pace("4");
+        var sending = demo.Start();
+        var first = await demo.Handler.NextAsync();
+        var acknowledgedAt = Stopwatch.GetTimestamp();
+        first.Accept("first");
+        var second = await demo.Handler.NextAsync();
+        Assert.True(Stopwatch.GetElapsedTime(acknowledgedAt, second.Started) >= TimeSpan.FromMilliseconds(250));
+        second.Accept("second");
+        await sending.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        Assert.Equal("Burst complete.", demo.Status);
+    }
+
+    [Fact]
     public async Task CancelLeavesInFlightRequestRunningAndCountsItsResponse()
     {
         await using var demo = new Demo();
         var sending = demo.Start();
         var first = await demo.Handler.NextAsync();
+        demo.Home.WaitForAssertion(() => Assert.Single(demo.Context.JSInterop.Invocations["Blazor._internal.domWrapper.focus"]));
         await demo.Home.Find("#cancel-burst").ClickAsync(new());
+        Assert.Single(demo.Home.FindAll("#cancel-burst[aria-disabled=true]:not([disabled])"));
         Assert.Contains("Cancellation pending", demo.Status);
         Assert.False(first.Token.IsCancellationRequested);
         Assert.False(sending.IsCompleted);
         demo.Report("first", "ConsumerOne");
         first.Accept("first");
         await sending.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        Assert.Single(demo.Home.FindAll("#send-burst[type=submit]:not([disabled]):not([aria-disabled])"));
         Assert.Equal("Burst cancelled.", demo.Status);
         Assert.Equal(1, demo.Handler.RequestCount);
         Assert.Equal("1", demo.Progress);
         // At-least-once delivery to the other competing consumer can exceed expected.
         demo.Report("first", "ConsumerTwo");
-        demo.Home.WaitForAssertion(() => Assert.Equal("Reported deliveries: 2 / 1 expected", demo.Total));
+        demo.Home.WaitForAssertion(() =>
+        {
+            Assert.Equal("Reported deliveries: 2 / 1 expected", demo.Total);
+            Assert.All(demo.Home.FindAll(".burst-results progress"), bar =>
+                Assert.InRange(int.Parse(bar.GetAttribute("value")!), 0, int.Parse(bar.GetAttribute("max")!)));
+        });
     }
 
     [Fact]
@@ -203,9 +260,14 @@ public class HomeBurstTests
         public string Status => Home.Find("#burst-status").TextContent;
         public string Total => Home.Find("#burst-total").TextContent;
 
-        public Demo()
+        public Demo(DelegatingHandler? requestSetup = null)
         {
-            _client = new HttpClient(Handler) { BaseAddress = new Uri("http://producer.test") };
+            if (requestSetup is not null)
+            {
+                requestSetup.InnerHandler = Handler;
+            }
+            _client = new HttpClient(requestSetup is null ? Handler : requestSetup) { BaseAddress = new Uri("http://producer.test") };
+            Context.JSInterop.SetupVoid("Blazor._internal.domWrapper.focus", _ => true).SetVoidResult();
             Context.Services.AddSingleton(new ProducerApiClient(_client));
             Context.Services.AddSingleton(Feed);
             Home = Context.Render<Home>();
@@ -218,7 +280,7 @@ public class HomeBurstTests
         public Task Start(string count = "2")
         {
             Home.Find("#burst-count").Input(count);
-            return Home.Find("#send-burst").ClickAsync(new());
+            return Home.Find("#burst-form").SubmitAsync();
         }
 
         public void Pace(string rate)
@@ -234,6 +296,20 @@ public class HomeBurstTests
         {
             await Context.DisposeAsync();
             _client.Dispose();
+        }
+    }
+
+    private sealed class DelayFirstRequest(TimeSpan delay) : DelegatingHandler
+    {
+        private int _calls;
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            if (Interlocked.Increment(ref _calls) == 1)
+            {
+                await Task.Delay(delay, cancellationToken);
+            }
+            return await base.SendAsync(request, cancellationToken);
         }
     }
 
