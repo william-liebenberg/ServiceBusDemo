@@ -58,6 +58,8 @@ public class HomeBurstAccessibilityTests
     {
         var context = new BunitContext();
         context.JSInterop.SetupVoid("Blazor._internal.domWrapper.focus", _ => true).SetVoidResult();
+        context.JSInterop.SetupVoid("Blazor._internal.NavigationLock.enableNavigationPrompt", _ => true).SetVoidResult();
+        context.JSInterop.SetupVoid("Blazor._internal.NavigationLock.disableNavigationPrompt", _ => true).SetVoidResult();
         context.Services.AddSingleton(new ProducerApiClient(client));
         context.Services.AddSingleton(feed);
         return context;

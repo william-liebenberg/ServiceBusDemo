@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Forms;
+using Microsoft.AspNetCore.Components.Routing;
 using Microsoft.AspNetCore.Components.Web;
 using Microsoft.JSInterop;
 
@@ -9,6 +10,10 @@ namespace ServiceBusDemo.Web.Components.Pages;
 
 public partial class Home
 {
+    private const string BurstNavigationWarning = "Leaving or reloading during a burst can interrupt sending and lose this page’s progress. " +
+        "The producer may still accept an in-flight message without this page receiving confirmation.";
+
+    [Inject] private IJSRuntime JS { get; set; } = default!;
     private readonly CancellationTokenSource pageLifetime = new();
     private BurstDeliveryTracker? burst;
     private CancellationTokenSource? burstDelay;
@@ -191,6 +196,28 @@ public partial class Home
         {
             burstDelay = null;
             cancelPending = false;
+        }
+    }
+
+    private async Task ConfirmBurstNavigationAsync(LocationChangingContext navigation)
+    {
+        if (burstDelay is null)
+        {
+            return;
+        }
+
+        try
+        {
+            if (!await JS.InvokeAsync<bool>("confirm", navigation.CancellationToken,
+                $"{BurstNavigationWarning}\n\nLeave this page?"))
+            {
+                navigation.PreventNavigation();
+            }
+        }
+        catch (JSDisconnectedException)
+        {
+            // The browser disconnected before it could confirm navigation.
+            navigation.PreventNavigation();
         }
     }
 

@@ -10,11 +10,12 @@
     <link rel="stylesheet" href="@Assets["ServiceBusDemo.Web.styles.css"]" />
     <ImportMap />
     <link rel="icon" type="image/png" href="favicon.png" />
-    <HeadOutlet />
+    <HeadOutlet @rendermode="InteractiveServer" />
 </head>
 
 <body>
-    <Routes />
+    @* Interactive routing lets Home's NavigationLock intercept in-app navigation. *@
+    <Routes @rendermode="InteractiveServer" />
     <script type="module" src="@Assets["delivery-focus.js"]"></script>
     <script src="@Assets["_framework/blazor.web.js"]"></script>
 </body>

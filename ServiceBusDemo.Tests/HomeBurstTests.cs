@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Net.Http.Json;
 using AngleSharp.Html.Dom;
 using Bunit;
+using Microsoft.AspNetCore.Components;
 using ServiceBusDemo.ServiceDefaults;
 using ServiceBusDemo.Web;
 using ServiceBusDemo.Web.Components.Pages;
@@ -204,6 +205,57 @@ public class HomeBurstTests
     }
 
     [Fact]
+    public async Task DecliningNavigationKeepsBurstRunningAndCancellingDisarmsThePrompt()
+    {
+        await using var demo = new Demo();
+        var navigation = demo.Context.Services.GetRequiredService<NavigationManager>();
+        var originalUri = navigation.Uri;
+        demo.Context.JSInterop.Setup<bool>("confirm", _ => true).SetResult(false);
+        Assert.Empty(demo.Home.FindAll("#burst-navigation-warning"));
+        Assert.Empty(demo.Context.JSInterop.Invocations["Blazor._internal.NavigationLock.enableNavigationPrompt"]);
+
+        var sending = demo.Start();
+        var first = await demo.Handler.NextAsync();
+        demo.Home.WaitForAssertion(() => Assert.Single(
+            demo.Context.JSInterop.Invocations["Blazor._internal.NavigationLock.enableNavigationPrompt"]));
+        Assert.Contains("may still accept an in-flight message", demo.Home.Find("#burst-navigation-warning").TextContent);
+        await demo.Home.InvokeAsync(() => navigation.NavigateTo("/Error"));
+        var confirmation = Assert.Single(demo.Context.JSInterop.Invocations["confirm"]);
+        Assert.Equal(originalUri, navigation.Uri);
+        Assert.Contains(demo.Home.Find("#burst-navigation-warning").TextContent, Assert.IsType<string>(confirmation.Arguments[0]));
+        Assert.False(first.Token.IsCancellationRequested);
+
+        await demo.Home.Find("#cancel-burst").ClickAsync(new());
+        Assert.Single(demo.Home.FindAll("#burst-navigation-warning"));
+        Assert.Empty(demo.Context.JSInterop.Invocations["Blazor._internal.NavigationLock.disableNavigationPrompt"]);
+        first.Accept("first");
+        await sending.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        Assert.Equal("Burst cancelled.", demo.Status);
+        Assert.Equal("1", demo.Progress);
+        Assert.Empty(demo.Home.FindAll("#burst-navigation-warning"));
+        demo.Home.WaitForAssertion(() => Assert.Single(
+            demo.Context.JSInterop.Invocations["Blazor._internal.NavigationLock.disableNavigationPrompt"]));
+        await demo.Home.InvokeAsync(() => navigation.NavigateTo("/Error"));
+        Assert.EndsWith("/Error", navigation.Uri);
+        Assert.Single(demo.Context.JSInterop.Invocations["confirm"]);
+    }
+
+    [Fact]
+    public async Task ConfirmingNavigationAllowsLeavingDuringBurst()
+    {
+        await using var demo = new Demo();
+        var navigation = demo.Context.Services.GetRequiredService<NavigationManager>();
+        demo.Context.JSInterop.Setup<bool>("confirm", _ => true).SetResult(true);
+        var sending = demo.Start();
+        await demo.Handler.NextAsync();
+        await demo.Home.InvokeAsync(() => navigation.NavigateTo("/Error"));
+        demo.Home.WaitForAssertion(() => Assert.EndsWith("/Error", navigation.Uri));
+        Assert.Single(demo.Context.JSInterop.Invocations["confirm"]);
+        await demo.Context.DisposeComponentsAsync();
+        await sending.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
     public async Task FailureKeepsAcknowledgementsAndNewBurstReplacesOnlyStatistics()
     {
         await using var demo = new Demo();
@@ -272,6 +324,8 @@ public class HomeBurstTests
             }
             _client = new HttpClient(requestSetup is null ? Handler : requestSetup) { BaseAddress = new Uri("http://producer.test") };
             Context.JSInterop.SetupVoid("Blazor._internal.domWrapper.focus", _ => true).SetVoidResult();
+            Context.JSInterop.SetupVoid("Blazor._internal.NavigationLock.enableNavigationPrompt", _ => true).SetVoidResult();
+            Context.JSInterop.SetupVoid("Blazor._internal.NavigationLock.disableNavigationPrompt", _ => true).SetVoidResult();
             Context.Services.AddSingleton(new ProducerApiClient(_client));
             Context.Services.AddSingleton(Feed);
             Home = Context.Render<Home>();
