@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
 using Microsoft.AspNetCore.Components;
+using Microsoft.AspNetCore.Components.Forms;
 using Microsoft.AspNetCore.Components.Web;
 using Microsoft.JSInterop;
 
@@ -17,28 +18,68 @@ public partial class Home
     private bool cancelPending;
     private bool burstFailed;
     private string? burstStatus;
+    private string? burstAnnouncement;
+    private (int Sent, int One, int Two)? announcedCounts;
+    private bool burstAnnouncementPending;
     private string? countError;
     private string? rateError;
     private ElementReference burstAction;
-    private bool focusBurstAction;
+    private InputTextArea messageInput = default!;
+    private (ElementReference Element, bool PreventScroll)? focusAfterRender;
 
     private bool Busy => isSending || burstDelay is not null;
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (!focusBurstAction || disposed)
+        if (focusAfterRender is not { } target || disposed)
         {
             return;
         }
 
-        focusBurstAction = false;
+        focusAfterRender = null;
         try
         {
-            await burstAction.FocusAsync(preventScroll: true);
+            await target.Element.FocusAsync(preventScroll: target.PreventScroll);
         }
         catch (JSDisconnectedException)
         {
-            // The browser can disconnect between rendering the action and focusing it.
+            // The browser can disconnect between rendering and moving focus.
+        }
+    }
+
+    private void QueueBurstAnnouncement(int sent, int one, int two)
+    {
+        if (disposed || burstAnnouncementPending || announcedCounts == (sent, one, two))
+        {
+            return;
+        }
+
+        burstAnnouncementPending = true;
+        _ = AnnounceBurstCountsAsync(pageLifetime.Token);
+    }
+
+    private async Task AnnounceBurstCountsAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            // Coalesce rapid updates, then read the latest burst so even the final or late counts are announced.
+            await Task.Delay(TimeSpan.FromMilliseconds(750), cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return;
+        }
+        finally
+        {
+            burstAnnouncementPending = false;
+        }
+
+        if (!disposed && burst is { } tracker)
+        {
+            var (sent, one, two, _) = tracker.Snapshot();
+            announcedCounts = (sent, one, two);
+            burstAnnouncement = $"Burst: {sent} of {tracker.Requested} sends acknowledged. Reported deliveries: {consumers[0].Label} {one}, {consumers[1].Label} {two}.";
+            StateHasChanged();
         }
     }
 
@@ -62,6 +103,10 @@ public partial class Home
         rateError = rateValid ? null : "Enter a whole number from 1 to 1000.";
         if (!messageValid || !countValid || !rateValid)
         {
+            if (!messageValid && messageInput.Element is { } field)
+            {
+                focusAfterRender = (field, false);
+            }
             return;
         }
 
@@ -70,13 +115,15 @@ public partial class Home
         burst?.Dispose();
         var tracker = new BurstDeliveryTracker(Feed, pattern, count);
         burst = tracker;
+        burstAnnouncement = null;
+        announcedCounts = null;
         statusMessage = null;
         burstFailed = false;
         burstStatus = "Sending burst…";
         cancelPending = false;
         using var delay = new CancellationTokenSource();
         burstDelay = delay;
-        focusBurstAction = true;
+        focusAfterRender = (burstAction, true);
         var requestToken = pageLifetime.Token;
         var spacing = rate == 0 ? TimeSpan.Zero : TimeSpan.FromTicks((long)Math.Ceiling((double)TimeSpan.TicksPerSecond / rate));
         long previousResponse = 0;

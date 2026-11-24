@@ -16,6 +16,11 @@
     max-inline-size: 9rem;
 }
 
+.burst-inputs .validation-message,
+.message-validation ::deep .validation-message {
+    color: var(--bs-danger-text-emphasis);
+}
+
 .burst-controls button[aria-disabled="true"] {
     opacity: var(--bs-btn-disabled-opacity);
 }
@@ -79,6 +84,7 @@
 .delivery-highlighted {
     background-color: var(--bs-tertiary-bg);
     outline: 2px solid var(--pattern-color);
+    outline-offset: 2px;
 }
 
 .delivery-card:focus-visible {

@@ -237,11 +237,15 @@ public class HomeBurstTests
         await using var demo = new Demo();
         var sending = demo.Start();
         var first = await demo.Handler.NextAsync();
-        for (var i = 0; i <= BurstDeliveryTracker.EarlyIdCapacity; i++)
+        // Keep the assertion from waiting behind hundreds of separately queued renderer work items.
+        await demo.Home.InvokeAsync(() =>
         {
-            demo.Report($"other-{i}", "ConsumerOne");
-        }
-        demo.Home.WaitForAssertion(() => Assert.Contains("early-report buffer filled up", demo.Home.Markup));
+            for (var i = 0; i <= BurstDeliveryTracker.EarlyIdCapacity; i++)
+            {
+                demo.Report($"other-{i}", "ConsumerOne");
+            }
+        });
+        await demo.Home.WaitForAssertionAsync(() => Assert.Contains("early-report buffer filled up", demo.Home.Markup));
         await demo.Context.DisposeComponentsAsync();
         Assert.True(first.Token.IsCancellationRequested);
         Assert.Empty(BurstDeliveryTrackerTests.Subscribers(demo.Feed));

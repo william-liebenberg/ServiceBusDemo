@@ -54,9 +54,11 @@
 
     <div class="mb-3">
         <label for="message" class="form-label">Message</label>
-        <InputTextArea id="message" class="form-control" rows="4" @bind-Value="model.Message"
-                       placeholder="Enter a business event message..." disabled="@Busy" />
-        <ValidationMessage For="() => model.Message" />
+        <InputTextArea id="message" class="form-control" rows="4" @bind-Value="model.Message" @ref="messageInput"
+                       placeholder="Enter a business event message..." disabled="@Busy" aria-describedby="message-error" />
+        <div id="message-error" class="message-validation">
+            <ValidationMessage For="() => model.Message" />
+        </div>
     </div>
 
     <button type="submit" class="btn btn-primary" disabled="@Busy">
@@ -85,7 +87,7 @@
             <div>
                 <div class="form-check">
                     <input id="burst-paced" type="checkbox" class="form-check-input" @bind="fixedRate" />
-                    <label for="burst-paced" class="form-check-label">Limit rate (unchecked: as fast as possible)</label>
+                    <label class="form-check-label" for="burst-paced">Limit rate (unchecked: as fast as possible)</label>
                 </div>
                 @if (fixedRate)
                 {
@@ -112,13 +114,15 @@
     </div>
 }
 
+<div id="burst-counts-status" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true">@burstAnnouncement</div>
 @if (burst is { } currentBurst)
 {
     var stats = currentBurst.Snapshot();
+    QueueBurstAnnouncement(stats.Sent, stats.ConsumerOne, stats.ConsumerTwo);
     var expected = stats.Sent * (currentBurst.Pattern == MessagingPattern.PubSub ? consumers.Length : 1);
     <div class="burst-results mt-3" role="region" aria-labelledby="burst-heading">
         <h2 id="burst-heading" class="h5">Latest burst: @PatternLabel(currentBurst.Pattern.ToString())</h2>
-        <p id="burst-status" class="@(burstFailed ? "text-danger" : null)" role="status">@burstStatus</p>
+        <p id="burst-status" class="@(burstFailed ? "text-danger-emphasis" : null)" role="status">@burstStatus</p>
         <label for="burst-progress">Acknowledged sends: @stats.Sent / @currentBurst.Requested</label>
         <progress id="burst-progress" class="burst-bar" max="@currentBurst.Requested" value="@stats.Sent"></progress>
         <p id="burst-total">Reported deliveries: @(stats.ConsumerOne + stats.ConsumerTwo) / @expected expected</p>
