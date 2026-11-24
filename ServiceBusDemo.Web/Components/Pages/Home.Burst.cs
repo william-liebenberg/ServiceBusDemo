@@ -25,7 +25,7 @@ public partial class Home
     private string? burstStatus;
     private string? burstAnnouncement;
     private (int Sent, int One, int Two)? announcedCounts;
-    private bool burstAnnouncementPending;
+    private bool announcementPending;
     private string? countError;
     private string? rateError;
     private ElementReference burstAction;
@@ -52,18 +52,18 @@ public partial class Home
         }
     }
 
-    private void QueueBurstAnnouncement(int sent, int one, int two)
+    private void QueueAnnouncements(int sent, int one, int two)
     {
-        if (disposed || burstAnnouncementPending || announcedCounts == (sent, one, two))
+        if (disposed || announcementPending || (announcedCounts == (sent, one, two) && pendingDeliveryReports == 0))
         {
             return;
         }
 
-        burstAnnouncementPending = true;
-        _ = AnnounceBurstCountsAsync(pageLifetime.Token);
+        announcementPending = true;
+        _ = AnnounceCountsAsync(pageLifetime.Token);
     }
 
-    private async Task AnnounceBurstCountsAsync(CancellationToken cancellationToken)
+    private async Task AnnounceCountsAsync(CancellationToken cancellationToken)
     {
         try
         {
@@ -76,14 +76,24 @@ public partial class Home
         }
         finally
         {
-            burstAnnouncementPending = false;
+            announcementPending = false;
         }
 
         if (!disposed && burst is { } tracker)
         {
             var (sent, one, two, _) = tracker.Snapshot();
-            announcedCounts = (sent, one, two);
-            burstAnnouncement = $"Burst: {sent} of {tracker.Requested} sends acknowledged. Reported deliveries: {consumers[0].Label} {one}, {consumers[1].Label} {two}.";
+            if (announcedCounts != (sent, one, two))
+            {
+                announcedCounts = (sent, one, two);
+                burstAnnouncement = $"Burst: {sent} of {tracker.Requested} sends acknowledged. Reported deliveries: {consumers[0].Label} {one}, {consumers[1].Label} {two}.";
+            }
+
+            if (burstDelay is null)
+            {
+                AnnounceDeliveryStatus(pendingDeliveryReports);
+                pendingDeliveryReports = 0;
+            }
+
             StateHasChanged();
         }
     }
@@ -122,6 +132,7 @@ public partial class Home
         burst = tracker;
         burstAnnouncement = null;
         announcedCounts = null;
+        pendingDeliveryReports = 0;
         statusMessage = null;
         burstFailed = false;
         burstStatus = "Sending burst…";

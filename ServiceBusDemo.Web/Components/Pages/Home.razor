@@ -108,6 +108,8 @@
                 aria-disabled="@(cancelPending ? "true" : null)" @onclick="CancelBurst" @ref="burstAction">
             @(burstDelay is null ? "Send burst" : "Cancel burst")
         </button>
+        <div id="burst-navigation-warning" class="text-warning-emphasis @(burstDelay is not null ? "mt-2" : null)"
+             role="status" aria-live="polite" aria-atomic="true">@(burstDelay is not null ? BurstNavigationWarning : null)</div>
     </fieldset>
 </form>
 
@@ -122,15 +124,11 @@
 @if (burst is { } currentBurst)
 {
     var stats = currentBurst.Snapshot();
-    QueueBurstAnnouncement(stats.Sent, stats.ConsumerOne, stats.ConsumerTwo);
+    QueueAnnouncements(stats.Sent, stats.ConsumerOne, stats.ConsumerTwo);
     var expected = stats.Sent * (currentBurst.Pattern == MessagingPattern.PubSub ? consumers.Length : 1);
     <div class="burst-results mt-3" role="region" aria-labelledby="burst-heading">
         <h2 id="burst-heading" class="h5">Latest burst: @PatternLabel(currentBurst.Pattern.ToString())</h2>
         <p id="burst-status" class="@(burstFailed ? "text-danger-emphasis" : null)" role="status">@burstStatus</p>
-        @if (burstDelay is not null)
-        {
-            <p id="burst-navigation-warning" class="text-warning-emphasis">@BurstNavigationWarning</p>
-        }
         <label for="burst-progress">Acknowledged sends: @stats.Sent / @currentBurst.Requested</label>
         <progress id="burst-progress" class="burst-bar" max="@currentBurst.Requested" value="@stats.Sent"></progress>
         <p id="burst-total">Reported deliveries: @(stats.ConsumerOne + stats.ConsumerTwo) / @expected expected</p>
@@ -256,6 +254,7 @@
     private long? lastReportCount;
     private long lastClearCount;
     private long deliveryStatusVersion;
+    private long pendingDeliveryReports;
     private string? deliveryStatus;
     private volatile bool disposed;
     private bool isSending;
@@ -316,22 +315,45 @@
         {
             var newReports = visibleCards.Count(card => card.Sequence > previousReportCount);
             var cleared = clearCount != lastClearCount;
-            if (cleared || newReports > 0)
+            if (cleared)
             {
-                var arrival = newReports switch
+                pendingDeliveryReports = 0;
+            }
+
+            if (burst is null)
+            {
+                AnnounceDeliveryStatus(newReports, cleared);
+            }
+            else
+            {
+                // The burst counts replace individual arrival notices while sending.
+                if (burstDelay is null)
                 {
-                    0 => "",
-                    1 => "1 new delivery report.",
-                    _ => $"{newReports} new delivery reports."
-                };
-                deliveryStatus = cleared ? $"Delivery reports cleared. {arrival}".TrimEnd() : arrival;
-                // Replace the child even for identical consecutive announcements, keeping the live region mounted.
-                deliveryStatusVersion++;
+                    // Late deliveries can still arrive in groups after sending ends.
+                    pendingDeliveryReports += newReports;
+                }
+                AnnounceDeliveryStatus(0, cleared);
             }
         }
 
         lastReportCount = reportCount;
         lastClearCount = clearCount;
+    }
+
+    private void AnnounceDeliveryStatus(long newReports, bool cleared = false)
+    {
+        if (cleared || newReports > 0)
+        {
+            var arrival = newReports switch
+            {
+                0 => "",
+                1 => "1 new delivery report.",
+                _ => $"{newReports} new delivery reports."
+            };
+            deliveryStatus = cleared ? $"Delivery reports cleared. {arrival}".TrimEnd() : arrival;
+            // Replace the child even for identical consecutive announcements, keeping the live region mounted.
+            deliveryStatusVersion++;
+        }
     }
 
     private static void EndInteraction(ref CardInteraction? interaction, DeliveryCard card)

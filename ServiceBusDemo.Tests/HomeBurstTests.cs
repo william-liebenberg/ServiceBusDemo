@@ -211,33 +211,67 @@ public class HomeBurstTests
         var navigation = demo.Context.Services.GetRequiredService<NavigationManager>();
         var originalUri = navigation.Uri;
         demo.Context.JSInterop.Setup<bool>("confirm", _ => true).SetResult(false);
-        Assert.Empty(demo.Home.FindAll("#burst-navigation-warning"));
+        var warning = demo.Home.Find("#burst-navigation-warning[role=status][aria-live=polite][aria-atomic=true]");
+        Assert.Empty(warning.TextContent);
         Assert.Empty(demo.Context.JSInterop.Invocations["Blazor._internal.NavigationLock.enableNavigationPrompt"]);
 
         var sending = demo.Start();
         var first = await demo.Handler.NextAsync();
         demo.Home.WaitForAssertion(() => Assert.Single(
             demo.Context.JSInterop.Invocations["Blazor._internal.NavigationLock.enableNavigationPrompt"]));
-        Assert.Contains("may still accept an in-flight message", demo.Home.Find("#burst-navigation-warning").TextContent);
+        Assert.Contains("may still accept an in-flight message", warning.TextContent);
         await demo.Home.InvokeAsync(() => navigation.NavigateTo("/Error"));
         var confirmation = Assert.Single(demo.Context.JSInterop.Invocations["confirm"]);
         Assert.Equal(originalUri, navigation.Uri);
-        Assert.Contains(demo.Home.Find("#burst-navigation-warning").TextContent, Assert.IsType<string>(confirmation.Arguments[0]));
+        Assert.Contains(warning.TextContent, Assert.IsType<string>(confirmation.Arguments[0]));
         Assert.False(first.Token.IsCancellationRequested);
 
         await demo.Home.Find("#cancel-burst").ClickAsync(new());
-        Assert.Single(demo.Home.FindAll("#burst-navigation-warning"));
+        Assert.Contains("may still accept an in-flight message", warning.TextContent);
         Assert.Empty(demo.Context.JSInterop.Invocations["Blazor._internal.NavigationLock.disableNavigationPrompt"]);
         first.Accept("first");
         await sending.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         Assert.Equal("Burst cancelled.", demo.Status);
         Assert.Equal("1", demo.Progress);
-        Assert.Empty(demo.Home.FindAll("#burst-navigation-warning"));
+        Assert.Empty(warning.TextContent);
         demo.Home.WaitForAssertion(() => Assert.Single(
             demo.Context.JSInterop.Invocations["Blazor._internal.NavigationLock.disableNavigationPrompt"]));
         await demo.Home.InvokeAsync(() => navigation.NavigateTo("/Error"));
         Assert.EndsWith("/Error", navigation.Uri);
         Assert.Single(demo.Context.JSInterop.Invocations["confirm"]);
+    }
+
+    [Fact]
+    public async Task BurstSummariesReplaceIndividualArrivalAnnouncements()
+    {
+        await using var demo = new Demo();
+        var sending = demo.Start();
+        var first = await demo.Handler.NextAsync();
+        first.Accept("first");
+        var second = await demo.Handler.NextAsync();
+        demo.Report("first", "ConsumerOne");
+        demo.Report("second", "ConsumerTwo");
+        await demo.Home.WaitForAssertionAsync(() =>
+        {
+            Assert.Equal(2, demo.Home.FindAll(".delivery-card").Count);
+            Assert.Empty(demo.Home.Find("#delivery-status").TextContent.Trim());
+            Assert.Equal("Burst: 1 of 2 sends acknowledged. Reported deliveries: Consumer One 1, Consumer Two 0.",
+                demo.Home.Find("#burst-counts-status").TextContent);
+        }, TimeSpan.FromSeconds(5));
+
+        second.Accept("second");
+        await sending.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        await demo.Home.InvokeAsync(() =>
+        {
+            demo.Report("first", "ConsumerTwo");
+            demo.Report("second", "ConsumerOne");
+        });
+        await demo.Home.WaitForAssertionAsync(() =>
+        {
+            Assert.Equal("Burst: 2 of 2 sends acknowledged. Reported deliveries: Consumer One 2, Consumer Two 2.",
+                demo.Home.Find("#burst-counts-status").TextContent);
+            Assert.Equal("2 new delivery reports.", demo.Home.Find("#delivery-status").TextContent.Trim());
+        }, TimeSpan.FromSeconds(5));
     }
 
     [Fact]
