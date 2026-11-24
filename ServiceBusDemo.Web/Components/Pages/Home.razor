@@ -326,12 +326,8 @@
             }
             else
             {
-                // The burst counts replace individual arrival notices while sending.
-                if (burstDelay is null)
-                {
-                    // Late deliveries can still arrive in groups after sending ends.
-                    pendingDeliveryReports += newReports;
-                }
+                // The shared cards include other tabs' reports, which the burst summary cannot represent.
+                pendingDeliveryReports += newReports;
                 AnnounceDeliveryStatus(0, cleared);
             }
         }

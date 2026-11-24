@@ -242,35 +242,43 @@ public class HomeBurstTests
     }
 
     [Fact]
-    public async Task BurstSummariesReplaceIndividualArrivalAnnouncements()
+    public async Task CoalescesSharedDeliveryAnnouncementsDuringBurstAndAnnouncesTheFinalGroup()
     {
+        const string deliveryStatus = "#delivery-status[role=status][aria-live=polite][aria-atomic=true] span";
         await using var demo = new Demo();
         var sending = demo.Start();
-        var first = await demo.Handler.NextAsync();
-        first.Accept("first");
-        var second = await demo.Handler.NextAsync();
-        demo.Report("first", "ConsumerOne");
-        demo.Report("second", "ConsumerTwo");
-        await demo.Home.WaitForAssertionAsync(() =>
-        {
-            Assert.Equal(2, demo.Home.FindAll(".delivery-card").Count);
-            Assert.Empty(demo.Home.Find("#delivery-status").TextContent.Trim());
-            Assert.Equal("Burst: 1 of 2 sends acknowledged. Reported deliveries: Consumer One 1, Consumer Two 0.",
-                demo.Home.Find("#burst-counts-status").TextContent);
-        }, TimeSpan.FromSeconds(5));
-
-        second.Accept("second");
-        await sending.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        var request = await demo.Handler.NextAsync();
         await demo.Home.InvokeAsync(() =>
         {
-            demo.Report("first", "ConsumerTwo");
-            demo.Report("second", "ConsumerOne");
+            demo.Report("other-tab-1", "ConsumerOne");
+            demo.Report("other-tab-2", "ConsumerTwo");
+            Assert.Equal(2, demo.Home.FindAll(".delivery-card").Count);
+            Assert.Empty(demo.Home.Find(deliveryStatus).TextContent);
         });
         await demo.Home.WaitForAssertionAsync(() =>
         {
-            Assert.Equal("Burst: 2 of 2 sends acknowledged. Reported deliveries: Consumer One 2, Consumer Two 2.",
+            Assert.Equal("2 new delivery reports.", demo.Home.Find(deliveryStatus).TextContent);
+            Assert.False(sending.IsCompleted);
+            Assert.Equal("Reported deliveries: 0 / 0 expected", demo.Total);
+        }, TimeSpan.FromSeconds(5));
+
+        request.Accept("first");
+        var last = await demo.Handler.NextAsync();
+        await demo.Home.InvokeAsync(() =>
+        {
+            demo.Report("first", "ConsumerOne");
+            demo.Report("second", "ConsumerTwo");
+            demo.Report("other-tab-3", "ConsumerTwo");
+            Assert.Equal("2 new delivery reports.", demo.Home.Find(deliveryStatus).TextContent);
+            last.Accept("second");
+        });
+        await sending.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        await demo.Home.WaitForAssertionAsync(() =>
+        {
+            Assert.Equal("Burst complete.", demo.Status);
+            Assert.Equal("Burst: 2 of 2 sends acknowledged. Reported deliveries: Consumer One 1, Consumer Two 1.",
                 demo.Home.Find("#burst-counts-status").TextContent);
-            Assert.Equal("2 new delivery reports.", demo.Home.Find("#delivery-status").TextContent.Trim());
+            Assert.Equal("3 new delivery reports.", demo.Home.Find(deliveryStatus).TextContent);
         }, TimeSpan.FromSeconds(5));
     }
 

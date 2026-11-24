@@ -88,11 +88,8 @@ public partial class Home
                 burstAnnouncement = $"Burst: {sent} of {tracker.Requested} sends acknowledged. Reported deliveries: {consumers[0].Label} {one}, {consumers[1].Label} {two}.";
             }
 
-            if (burstDelay is null)
-            {
-                AnnounceDeliveryStatus(pendingDeliveryReports);
-                pendingDeliveryReports = 0;
-            }
+            AnnounceDeliveryStatus(pendingDeliveryReports);
+            pendingDeliveryReports = 0;
 
             StateHasChanged();
         }
@@ -132,7 +129,6 @@ public partial class Home
         burst = tracker;
         burstAnnouncement = null;
         announcedCounts = null;
-        pendingDeliveryReports = 0;
         statusMessage = null;
         burstFailed = false;
         burstStatus = "Sending burst…";
