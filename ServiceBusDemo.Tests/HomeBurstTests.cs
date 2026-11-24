@@ -1,0 +1,265 @@
+using System.Diagnostics;
+using System.Net.Http.Json;
+using AngleSharp.Html.Dom;
+using Bunit;
+using ServiceBusDemo.ServiceDefaults;
+using ServiceBusDemo.Web;
+using ServiceBusDemo.Web.Components.Pages;
+using TestContext = Xunit.TestContext;
+
+namespace ServiceBusDemo.Tests;
+
+public class HomeBurstTests
+{
+    [Theory]
+    [InlineData(false, "/sendMessage", "CompetingConsumers", 2)]
+    [InlineData(true, "/broadcastMessage", "PubSub", 4)]
+    public async Task TracksProgressAndEarlyAndLateReports(bool pubSub, string route, string pattern, int expected)
+    {
+        await using var demo = new Demo();
+        if (pubSub)
+        {
+            var radio = demo.Home.Find("#pattern-pubsub");
+            radio.Change(((IHtmlInputElement)radio).Value);
+        }
+        var sending = demo.Start();
+        var first = await demo.Handler.NextAsync();
+        Assert.Equal((route, "Order 42"), (first.Route, first.Message));
+        Assert.Single(demo.Home.FindAll("button[type=submit][disabled]"));
+        Assert.Single(demo.Home.FindAll("label[for=burst-count]"));
+        Assert.Single(demo.Home.FindAll("label[for=burst-progress]"));
+        Assert.Single(demo.Home.FindAll("label[for=burst-ConsumerOne]"));
+        demo.Report("first", "ConsumerOne", pattern);
+        demo.Home.WaitForAssertion(() => Assert.Equal("0", demo.Progress));
+        first.Accept("first");
+        var second = await demo.Handler.NextAsync();
+        Assert.Equal((route, "Order 42"), (second.Route, second.Message));
+        demo.Home.WaitForAssertion(() =>
+        {
+            Assert.Equal("1", demo.Progress);
+            Assert.Equal("2", demo.Home.Find("#burst-progress").GetAttribute("max"));
+            Assert.Equal("1", demo.Consumer("One"));
+        });
+        second.Accept("second");
+        await sending.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        demo.Report("second", "ConsumerTwo", pattern);
+        demo.Report("second", "ConsumerTwo", pattern);
+        demo.Report("unrelated", "ConsumerTwo", pattern);
+        if (pubSub)
+        {
+            demo.Report("first", "ConsumerTwo", pattern);
+            demo.Report("second", "ConsumerOne", pattern);
+        }
+        demo.Home.WaitForAssertion(() =>
+        {
+            Assert.Equal($"Reported deliveries: {expected} / {expected} expected", demo.Total);
+            Assert.Equal(pubSub ? "2" : "1", demo.Consumer("One"));
+            Assert.Equal(pubSub ? "2" : "1", demo.Consumer("Two"));
+        });
+        demo.Home.Find(".deliveries button").Click();
+        Assert.Empty(demo.Home.FindAll(".delivery-card"));
+        Assert.Equal($"Reported deliveries: {expected} / {expected} expected", demo.Total);
+        Assert.Equal(2, demo.Home.FindAll("tbody tr").Count);
+    }
+
+    [Theory]
+    [InlineData("0", null, "count")]
+    [InlineData("501", null, "count")]
+    [InlineData("1.5", null, "count")]
+    [InlineData("", null, "count")]
+    [InlineData("500", "1001", "rate")]
+    [InlineData("1", "0", "rate")]
+    [InlineData("1", "invalid", "rate")]
+    [InlineData("1", "", "rate")]
+    public async Task InvalidBurstInputDoesNotSend(string count, string? rate, string field)
+    {
+        await using var demo = new Demo();
+        if (rate is not null)
+        {
+            demo.Pace(rate);
+        }
+        await demo.Start(count);
+        Assert.Empty(demo.Home.FindAll("#burst-progress"));
+        Assert.Equal("true", demo.Home.Find($"#burst-{field}").GetAttribute("aria-invalid"));
+        Assert.Contains("whole number", demo.Home.Find($"#burst-{field}-error").TextContent);
+        Assert.Equal(0, demo.Handler.RequestCount);
+    }
+
+    [Fact]
+    public async Task SharedMessageValidationAppliesToBurstAndBurstErrorsDoNotBlockSingleSend()
+    {
+        await using var demo = new Demo();
+        demo.Home.Find("#message").Change("   ");
+        await demo.Start();
+        Assert.Contains("Please enter a message", demo.Home.Markup);
+        Assert.Equal(0, demo.Handler.RequestCount);
+        demo.Home.Find("#message").Change("Order 42");
+        await demo.Start("bad count");
+        var sending = demo.Home.Find("form").SubmitAsync();
+        var request = await demo.Handler.NextAsync();
+        request.Accept("single");
+        await sending;
+        Assert.Single(demo.Home.FindAll("tbody tr"));
+        Assert.Empty(demo.Home.FindAll("#burst-progress"));
+    }
+
+    [Fact]
+    public async Task FixedRateSpacesStartsAndCancelInterruptsTheNextDelay()
+    {
+        await using var demo = new Demo();
+        demo.Pace("2");
+        var sending = demo.Start("3");
+        var first = await demo.Handler.NextAsync();
+        first.Accept("first");
+        var second = await demo.Handler.NextAsync();
+        Assert.True(Stopwatch.GetElapsedTime(first.Started, second.Started) >= TimeSpan.FromSeconds(0.5));
+        await demo.Home.InvokeAsync(() =>
+        {
+            second.Accept("second");
+        });
+        demo.Home.WaitForAssertion(() => Assert.Equal("2", demo.Progress));
+        await demo.Home.Find("#cancel-burst").ClickAsync(new());
+        await sending.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        Assert.Equal("Burst cancelled.", demo.Status);
+        Assert.Equal(2, demo.Handler.RequestCount);
+        Assert.Equal("2", demo.Progress);
+    }
+
+    [Fact]
+    public async Task CancelLeavesInFlightRequestRunningAndCountsItsResponse()
+    {
+        await using var demo = new Demo();
+        var sending = demo.Start();
+        var first = await demo.Handler.NextAsync();
+        await demo.Home.Find("#cancel-burst").ClickAsync(new());
+        Assert.Contains("Cancellation pending", demo.Status);
+        Assert.False(first.Token.IsCancellationRequested);
+        Assert.False(sending.IsCompleted);
+        demo.Report("first", "ConsumerOne");
+        first.Accept("first");
+        await sending.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        Assert.Equal("Burst cancelled.", demo.Status);
+        Assert.Equal(1, demo.Handler.RequestCount);
+        Assert.Equal("1", demo.Progress);
+        // At-least-once delivery to the other competing consumer can exceed expected.
+        demo.Report("first", "ConsumerTwo");
+        demo.Home.WaitForAssertion(() => Assert.Equal("Reported deliveries: 2 / 1 expected", demo.Total));
+    }
+
+    [Fact]
+    public async Task FailureKeepsAcknowledgementsAndNewBurstReplacesOnlyStatistics()
+    {
+        await using var demo = new Demo();
+        var sending = demo.Start("3");
+        (await demo.Handler.NextAsync()).Accept("first");
+        var failed = await demo.Handler.NextAsync();
+        demo.Report("failed", "ConsumerOne");
+        failed.Response.SetResult(new(HttpStatusCode.ServiceUnavailable));
+        await sending;
+        demo.Report("first", "ConsumerOne");
+        demo.Home.WaitForAssertion(() => Assert.Equal("Reported deliveries: 1 / 1 expected", demo.Total));
+        Assert.Equal(2, demo.Handler.RequestCount);
+        Assert.Equal("1", demo.Progress);
+        Assert.Contains("may have accepted", demo.Status);
+        var previous = Assert.Single(BurstDeliveryTrackerTests.Subscribers(demo.Feed)).Target;
+
+        var next = demo.Start("1");
+        var request = await demo.Handler.NextAsync();
+        Assert.NotSame(previous, Assert.Single(BurstDeliveryTrackerTests.Subscribers(demo.Feed)).Target);
+        request.Accept("new");
+        await next;
+        demo.Report("first", "ConsumerTwo");
+        demo.Home.WaitForAssertion(() => Assert.Equal("Reported deliveries: 0 / 1 expected", demo.Total));
+        Assert.Equal(2, demo.Home.FindAll("tbody tr").Count);
+        Assert.Equal(3, demo.Home.FindAll(".delivery-card").Count);
+    }
+
+    [Fact]
+    public async Task OverflowIsVisibleAndComponentDisposalCancelsTheRequestAndDetachesTracker()
+    {
+        await using var demo = new Demo();
+        var sending = demo.Start();
+        var first = await demo.Handler.NextAsync();
+        for (var i = 0; i <= BurstDeliveryTracker.EarlyIdCapacity; i++)
+        {
+            demo.Report($"other-{i}", "ConsumerOne");
+        }
+        demo.Home.WaitForAssertion(() => Assert.Contains("early-report buffer filled up", demo.Home.Markup));
+        await demo.Context.DisposeComponentsAsync();
+        Assert.True(first.Token.IsCancellationRequested);
+        Assert.Empty(BurstDeliveryTrackerTests.Subscribers(demo.Feed));
+        await sending.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        Assert.Equal(1, demo.Handler.RequestCount);
+    }
+
+    private sealed class Demo : IAsyncDisposable
+    {
+        private readonly HttpClient _client;
+        public BunitContext Context { get; } = new();
+        public ControlledHandler Handler { get; } = new();
+        public DeliveryFeed Feed { get; } = new();
+        public IRenderedComponent<Home> Home { get; }
+        public string? Progress => Home.Find("#burst-progress").GetAttribute("value");
+        public string Status => Home.Find("#burst-status").TextContent;
+        public string Total => Home.Find("#burst-total").TextContent;
+
+        public Demo()
+        {
+            _client = new HttpClient(Handler) { BaseAddress = new Uri("http://producer.test") };
+            Context.Services.AddSingleton(new ProducerApiClient(_client));
+            Context.Services.AddSingleton(Feed);
+            Home = Context.Render<Home>();
+            Assert.Equal("10", Home.Find("#burst-count").GetAttribute("value"));
+            Home.Find("#message").Change(" Order 42 \t");
+        }
+
+        public string? Consumer(string suffix) => Home.Find($"#burst-Consumer{suffix}").GetAttribute("value");
+
+        public Task Start(string count = "2")
+        {
+            Home.Find("#burst-count").Input(count);
+            return Home.Find("#send-burst").ClickAsync(new());
+        }
+
+        public void Pace(string rate)
+        {
+            Home.Find("#burst-paced").Change(true);
+            Home.Find("#burst-rate").Input(rate);
+        }
+
+        public void Report(string id, string consumer, string pattern = "CompetingConsumers") =>
+            Feed.Add(new DeliveryEvent(id, pattern, consumer, "topic", "subscription", "Order 42", 1, DateTimeOffset.UnixEpoch));
+
+        public async ValueTask DisposeAsync()
+        {
+            await Context.DisposeAsync();
+            _client.Dispose();
+        }
+    }
+
+    private sealed record Request(string Route, string Message, long Started, CancellationToken Token)
+    {
+        public TaskCompletionSource<HttpResponseMessage> Response { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public void Accept(string id) => Response.SetResult(new(HttpStatusCode.Accepted) { Content = JsonContent.Create(new SendMessageResult(id, "topic")) });
+    }
+
+    private sealed class ControlledHandler : HttpMessageHandler
+    {
+        private readonly System.Threading.Channels.Channel<Request> _requests = System.Threading.Channels.Channel.CreateUnbounded<Request>();
+        private int _count;
+        public int RequestCount => Volatile.Read(ref _count);
+
+        public Task<Request> NextAsync() => _requests.Reader.ReadAsync(TestContext.Current.CancellationToken).AsTask()
+            .WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var started = Stopwatch.GetTimestamp();
+            var body = await request.Content!.ReadFromJsonAsync<SendMessageRequest>(cancellationToken);
+            var pending = new Request(request.RequestUri!.AbsolutePath, body!.Message, started, cancellationToken);
+            Interlocked.Increment(ref _count);
+            await _requests.Writer.WriteAsync(pending, cancellationToken);
+            return await pending.Response.Task.WaitAsync(cancellationToken);
+        }
+    }
+}

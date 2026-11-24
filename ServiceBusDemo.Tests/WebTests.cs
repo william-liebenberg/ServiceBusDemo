@@ -1,11 +1,15 @@
 using System.Collections.Concurrent;
 using System.Net.Http.Json;
+using AngleSharp.Html.Dom;
 using Aspire.Hosting;
+using Bunit;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using ServiceBusDemo.ServiceDefaults;
 using ServiceBusDemo.Web;
+using ServiceBusDemo.Web.Components.Pages;
+using TestContext = Xunit.TestContext;
 
 namespace ServiceBusDemo.Tests;
 
@@ -18,6 +22,7 @@ public class WebTests
         timeout.CancelAfter(TimeSpan.FromMinutes(3));
         var token = timeout.Token;
         var reports = new ConcurrentQueue<(DeliveryEvent Delivery, HttpStatusCode Status)>();
+        var observedFeed = new DeliveryFeed();
         var appHost = await DistributedApplicationTestingBuilder.CreateAsync<Projects.ServiceBusDemo_AppHost>(token);
 
         // Observe reports by forwarding them to the real endpoint, without adding a read API.
@@ -43,6 +48,10 @@ public class WebTests
                 status = HttpStatusCode.GatewayTimeout;
             }
             reports.Enqueue((delivery, status));
+            if (status == HttpStatusCode.Accepted)
+            {
+                observedFeed.Add(delivery);
+            }
             return Results.StatusCode((int)status);
         });
         await proxy.StartAsync(token);
@@ -76,6 +85,8 @@ public class WebTests
         await WaitForReportsAsync(reports, competing, 1, token);
         await WaitForReportsAsync(reports, broadcast, 2, token);
 
+        await VerifyBurstsAsync(producer, observedFeed, token);
+
         var commandService = app.Services.GetRequiredService<ResourceCommandService>();
         var stop = await commandService.ExecuteCommandAsync("webfrontend", "resource-stop", token);
         Assert.True(stop.Success, stop.Message);
@@ -101,6 +112,44 @@ public class WebTests
         Assert.All(fanoutReports, report => Assert.Equal(HttpStatusCode.Accepted, report.Status));
         AssertFanout(fanoutReports.Select(report => report.Delivery));
         Assert.All(reports, report => Assert.Equal(1, report.Delivery.DeliveryCount));
+    }
+
+    private static async Task VerifyBurstsAsync(HttpClient producer, DeliveryFeed feed, CancellationToken token)
+    {
+        await using var context = new BunitContext();
+        context.Services.AddSingleton(new ProducerApiClient(producer));
+        context.Services.AddSingleton(feed);
+        var home = context.Render<Home>();
+        home.Find("#message").Change("Aspire burst smoke test");
+        home.Find("#burst-count").Input("3");
+
+        await home.Find("#send-burst").ClickAsync(new()).WaitAsync(token);
+        home.WaitForAssertion(() => Assert.Equal("Reported deliveries: 3 / 3 expected", home.Find("#burst-total").TextContent),
+            TimeSpan.FromSeconds(15));
+
+        var pubSub = home.Find("#pattern-pubsub");
+        pubSub.Change(((IHtmlInputElement)pubSub).Value);
+        await home.Find("#send-burst").ClickAsync(new()).WaitAsync(token);
+        home.WaitForAssertion(() => Assert.Equal("Reported deliveries: 6 / 6 expected", home.Find("#burst-total").TextContent),
+            TimeSpan.FromSeconds(15));
+        Assert.Equal("3", home.Find("#burst-ConsumerOne").GetAttribute("value"));
+        Assert.Equal("3", home.Find("#burst-ConsumerTwo").GetAttribute("value"));
+
+        await home.Find("#burst-count").InputAsync(new() { Value = "20" });
+        await home.Find("#burst-paced").ChangeAsync(new() { Value = true });
+        var rate = home.WaitForElement("#burst-rate");
+        await rate.InputAsync(new() { Value = "1" });
+        var sending = home.Find("#send-burst").ClickAsync(new());
+        home.WaitForAssertion(() => Assert.InRange(int.Parse(home.Find("#burst-progress[max='20']").GetAttribute("value")!), 1, 19),
+            TimeSpan.FromSeconds(15));
+        await home.Find("#cancel-burst").ClickAsync(new()).WaitAsync(token);
+        await sending.WaitAsync(token);
+        var acknowledged = int.Parse(home.Find("#burst-progress").GetAttribute("value")!);
+        Assert.InRange(acknowledged, 1, 19);
+        Assert.Equal("Burst cancelled.", home.Find("#burst-status").TextContent);
+        var expected = acknowledged * 2;
+        home.WaitForAssertion(() => Assert.Equal($"Reported deliveries: {expected} / {expected} expected", home.Find("#burst-total").TextContent),
+            TimeSpan.FromSeconds(15));
     }
 
     private static void AssertFanout(IEnumerable<DeliveryEvent> deliveries)

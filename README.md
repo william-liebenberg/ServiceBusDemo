@@ -171,7 +171,15 @@ To observe the difference, send one message with each pattern and look at the co
 - **Competing consumers:** find `[CompetingConsumers]`; only one of the two consumers handles a given message in the normal case.
 - **Publish/subscribe:** find `[PubSub]`; both consumers log the same message ID, each from its own subscription.
 
-Run the test project with:
+### Try a burst
+
+Choose a pattern and enter a message. Set **Count** (1–500, default 10), leave **Limit rate** unchecked to go as fast as possible, or enable it and enter a whole-number rate (1–1000 messages per second). Select **Send burst** and watch the acknowledged-send progress and the two consumer bars. Try each pattern: with all reports arriving once, the competing-consumer bars sum to the acknowledged send count, while each pub/sub bar reaches that count.
+
+The Web UI loops sequentially over the existing producer routes rather than using a batch API. This keeps the per-message acknowledgements and lets the UI pace request starts and cancel between requests. A fixed rate is a cap, not a throughput guarantee. **Cancel burst** interrupts any pacing delay and stops new requests; it lets an already-started request finish and counts its acknowledgement if it succeeds. A failed request stops the burst without retrying: the producer may have accepted it even if the UI didn't receive confirmation.
+
+The bars count **reported deliveries**, not broker backlog. They follow acknowledged IDs from the latest burst in this page session, including reports that arrive after sending stops. **Clear** removes shared delivery cards, not burst stats or sent history. Reports are best-effort and can be lost, and the UI warns if its bounded early-report buffer fills. Repeat reports for the same message and consumer count once; redelivery to a different competing consumer can put the total above expected.
+
+### Run the tests
 
 ```powershell
 dotnet test ServiceBusDemo.slnx
