@@ -13,8 +13,13 @@ public sealed class DeliveryFeed
     // Callbacks run outside the storage lock and may overlap on concurrent updates.
     public event Action? Changed;
 
+    // One notification per Add, before Changed. Clear and retention do not affect it.
+    // An already captured notification can still arrive after unsubscription.
+    internal event Action<DeliveryEvent>? Reported;
+
     public void Add(DeliveryEvent delivery)
     {
+        Action<DeliveryEvent>? reported;
         lock (_gate)
         {
             if (_deliveries.Count == Capacity)
@@ -24,8 +29,10 @@ public sealed class DeliveryFeed
 
             _deliveries.Enqueue(delivery);
             _reportCount++;
+            reported = Reported;
         }
 
+        reported?.Invoke(delivery);
         Changed?.Invoke();
     }
 

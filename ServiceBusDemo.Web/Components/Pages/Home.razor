@@ -1,5 +1,4 @@
 @page "/"
-@rendermode InteractiveServer
 @using ServiceBusDemo.ServiceDefaults
 @implements IDisposable
 
@@ -25,14 +24,19 @@
 
 <PageTitle>Service Bus Demo</PageTitle>
 
+@if (burstDelay is not null)
+{
+    <NavigationLock ConfirmExternalNavigation="true" OnBeforeInternalNavigation="ConfirmBurstNavigationAsync" />
+}
+
 <h1>Service Bus Demo</h1>
 
 <p>Publish a message to Azure Service Bus via the producer API, choosing which messaging pattern to demonstrate.</p>
 
-<EditForm Model="model" OnValidSubmit="SendAsync" FormName="send-message">
+<EditForm EditContext="messageContext" OnValidSubmit="SendAsync" FormName="send-message">
     <DataAnnotationsValidator />
 
-    <fieldset class="mb-3" disabled="@isSending">
+    <fieldset class="mb-3" disabled="@Busy">
         <legend class="form-label fs-6">Pattern</legend>
         <InputRadioGroup @bind-Value="model.Pattern">
             <div class="form-check">
@@ -54,12 +58,14 @@
 
     <div class="mb-3">
         <label for="message" class="form-label">Message</label>
-        <InputTextArea id="message" class="form-control" rows="4" @bind-Value="model.Message"
-                       placeholder="Enter a business event message..." disabled="@isSending" />
-        <ValidationMessage For="() => model.Message" />
+        <InputTextArea id="message" class="form-control" rows="4" @bind-Value="model.Message" @ref="messageInput"
+                       placeholder="Enter a business event message..." disabled="@Busy" aria-describedby="message-error" />
+        <div id="message-error" class="message-validation">
+            <ValidationMessage For="() => model.Message" />
+        </div>
     </div>
 
-    <button type="submit" class="btn btn-primary" disabled="@isSending">
+    <button type="submit" class="btn btn-primary" disabled="@Busy">
         @if (isSending)
         {
             <span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>
@@ -72,10 +78,73 @@
     </button>
 </EditForm>
 
+<form id="burst-form" @formname="send-burst" @onsubmit="SendBurstAsync" @onsubmit:preventDefault>
+    <fieldset class="burst-controls mt-3">
+        <legend class="h5">Burst sender</legend>
+        <fieldset class="burst-inputs" disabled="@Busy" aria-label="Burst settings">
+            <div>
+                <label for="burst-count" class="form-label">Count (1–500)</label>
+                <input id="burst-count" class="form-control" inputmode="numeric" @bind="burstCount" @bind:event="oninput"
+                       aria-invalid="@(countError is not null ? "true" : "false")" aria-describedby="burst-count-error" />
+                <div id="burst-count-error" class="validation-message" aria-live="polite">@countError</div>
+            </div>
+            <div>
+                <div class="form-check">
+                    <input id="burst-paced" type="checkbox" class="form-check-input" @bind="fixedRate" />
+                    <label class="form-check-label" for="burst-paced">Limit rate (unchecked: as fast as possible)</label>
+                </div>
+                @if (fixedRate)
+                {
+                    <label for="burst-rate" class="form-label">Rate (1–1000 messages per second)</label>
+                    <input id="burst-rate" class="form-control" inputmode="numeric" @bind="burstRate" @bind:event="oninput"
+                           aria-invalid="@(rateError is not null ? "true" : "false")" aria-describedby="burst-rate-error" />
+                    <div id="burst-rate-error" class="validation-message" aria-live="polite">@rateError</div>
+                }
+            </div>
+        </fieldset>
+        @* Keep this node mounted and focusable through cancellation and completion. *@
+        <button id="@(burstDelay is null ? "send-burst" : "cancel-burst")" type="@(burstDelay is null ? "submit" : "button")"
+                class="btn @(burstDelay is null ? "btn-primary" : "btn-outline-secondary")" disabled="@isSending"
+                aria-disabled="@(cancelPending ? "true" : null)" @onclick="CancelBurst" @ref="burstAction">
+            @(burstDelay is null ? "Send burst" : "Cancel burst")
+        </button>
+        <div id="burst-navigation-warning" class="text-warning-emphasis @(burstDelay is not null ? "mt-2" : null)"
+             role="status" aria-live="polite" aria-atomic="true">@(burstDelay is not null ? BurstNavigationWarning : null)</div>
+    </fieldset>
+</form>
+
 @if (statusMessage is not null)
 {
     <div class="alert @(isError ? "alert-danger" : "alert-success") mt-3" role="status">
         @statusMessage
+    </div>
+}
+
+<div id="burst-counts-status" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true">@burstAnnouncement</div>
+@if (burst is { } currentBurst)
+{
+    var stats = currentBurst.Snapshot();
+    QueueAnnouncements(stats.Sent, stats.ConsumerOne, stats.ConsumerTwo);
+    var expected = stats.Sent * (currentBurst.Pattern == MessagingPattern.PubSub ? consumers.Length : 1);
+    <div class="burst-results mt-3" role="region" aria-labelledby="burst-heading">
+        <h2 id="burst-heading" class="h5">Latest burst: @PatternLabel(currentBurst.Pattern.ToString())</h2>
+        <p id="burst-status" class="@(burstFailed ? "text-danger-emphasis" : null)" role="status">@burstStatus</p>
+        <label for="burst-progress">Acknowledged sends: @stats.Sent / @currentBurst.Requested</label>
+        <progress id="burst-progress" class="burst-bar" max="@currentBurst.Requested" value="@stats.Sent"></progress>
+        <p id="burst-total">Reported deliveries: @(stats.ConsumerOne + stats.ConsumerTwo) / @expected expected</p>
+        @foreach (var consumer in consumers)
+        {
+            var count = consumer.Id == BurstDeliveryTracker.ConsumerOneId ? stats.ConsumerOne : stats.ConsumerTwo;
+            var barId = $"burst-{consumer.Id}";
+            <label for="@barId">@consumer.Label: @count</label>
+            <progress id="@barId" class="burst-bar" max="@Math.Max(1, Math.Max(stats.Sent, count))" value="@count"></progress>
+        }
+        @if (stats.Overflowed)
+        {
+            <p class="text-warning-emphasis" role="status">The early-report buffer filled up; some burst reports may be missing.</p>
+        }
+        <p class="text-body-secondary mb-0">Reports are best-effort and may be lost. These counts do not measure broker backlog.
+            Repeat reports from the same consumer are counted once per message, but redelivery to another competing consumer can put the total above expected.</p>
     </div>
 }
 
@@ -84,7 +153,7 @@
         <h2 id="deliveries-heading" class="h5 mb-0">Deliveries</h2>
         <button type="button" class="btn btn-outline-secondary btn-sm" @onclick="Feed.Clear">Clear</button>
     </div>
-    <p class="text-body-secondary">Only recent reports are shown, across all tabs. Clear removes shared reports, not sent history.</p>
+    <p class="text-body-secondary">Only recent reports are shown, across all tabs. Clear removes shared reports, not sent history or burst statistics.</p>
     <div id="delivery-status" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true">
         <span @key="deliveryStatusVersion">@deliveryStatus</span>
     </div>
@@ -174,9 +243,10 @@
 
 @code {
     private static readonly (string Id, string Label)[] consumers =
-        [("ConsumerOne", "Consumer One"), ("ConsumerTwo", "Consumer Two")];
+        [(BurstDeliveryTracker.ConsumerOneId, "Consumer One"), (BurstDeliveryTracker.ConsumerTwoId, "Consumer Two")];
 
     private readonly MessageModel model = new();
+    private EditContext messageContext = default!;
     private readonly List<SentMessage> sentMessages = [];
     private CardInteraction? hoveredCard;
     private CardInteraction? focusedCard;
@@ -184,13 +254,18 @@
     private long? lastReportCount;
     private long lastClearCount;
     private long deliveryStatusVersion;
+    private long pendingDeliveryReports;
     private string? deliveryStatus;
     private volatile bool disposed;
     private bool isSending;
     private bool isError;
     private string? statusMessage;
 
-    protected override void OnInitialized() => Feed.Changed += OnFeedChanged;
+    protected override void OnInitialized()
+    {
+        messageContext = new EditContext(model);
+        Feed.Changed += OnFeedChanged;
+    }
 
     private void OnFeedChanged() => _ = RefreshDeliveriesAsync();
 
@@ -228,6 +303,10 @@
     {
         disposed = true;
         Feed.Changed -= OnFeedChanged;
+        burst?.Dispose();
+        burstDelay?.Cancel();
+        pageLifetime.Cancel();
+        pageLifetime.Dispose();
     }
 
     private void UpdateDeliveryStatus(DeliveryCard[] visibleCards, long reportCount, long clearCount)
@@ -236,22 +315,41 @@
         {
             var newReports = visibleCards.Count(card => card.Sequence > previousReportCount);
             var cleared = clearCount != lastClearCount;
-            if (cleared || newReports > 0)
+            if (cleared)
             {
-                var arrival = newReports switch
-                {
-                    0 => "",
-                    1 => "1 new delivery report.",
-                    _ => $"{newReports} new delivery reports."
-                };
-                deliveryStatus = cleared ? $"Delivery reports cleared. {arrival}".TrimEnd() : arrival;
-                // Replace the child even for identical consecutive announcements, keeping the live region mounted.
-                deliveryStatusVersion++;
+                pendingDeliveryReports = 0;
+            }
+
+            if (burst is null)
+            {
+                AnnounceDeliveryStatus(newReports, cleared);
+            }
+            else
+            {
+                // The shared cards include other tabs' reports, which the burst summary cannot represent.
+                pendingDeliveryReports += newReports;
+                AnnounceDeliveryStatus(0, cleared);
             }
         }
 
         lastReportCount = reportCount;
         lastClearCount = clearCount;
+    }
+
+    private void AnnounceDeliveryStatus(long newReports, bool cleared = false)
+    {
+        if (cleared || newReports > 0)
+        {
+            var arrival = newReports switch
+            {
+                0 => "",
+                1 => "1 new delivery report.",
+                _ => $"{newReports} new delivery reports."
+            };
+            deliveryStatus = cleared ? $"Delivery reports cleared. {arrival}".TrimEnd() : arrival;
+            // Replace the child even for identical consecutive announcements, keeping the live region mounted.
+            deliveryStatusVersion++;
+        }
     }
 
     private static void EndInteraction(ref CardInteraction? interaction, DeliveryCard card)
@@ -278,6 +376,11 @@
 
     private async Task SendAsync()
     {
+        if (disposed || Busy)
+        {
+            return;
+        }
+
         isSending = true;
         statusMessage = null;
 
@@ -285,7 +388,11 @@
         {
             var message = model.Message!.Trim();
             var pattern = model.Pattern;
-            var result = await ProducerApi.SendMessageAsync(message, pattern);
+            var result = await ProducerApi.SendMessageAsync(message, pattern, pageLifetime.Token);
+            if (disposed)
+            {
+                return;
+            }
 
             sentMessages.Insert(0, new SentMessage(result.MessageId, pattern, result.Topic, message, DateTimeOffset.UtcNow));
             statusMessage = $"Message {result.MessageId} published to '{result.Topic}'.";
@@ -293,9 +400,12 @@
         }
         catch (Exception ex)
         {
-            Logger.LogError(ex, "Failed to send message via producer API");
-            statusMessage = $"Failed to send message: {ex.Message}";
-            isError = true;
+            if (!disposed)
+            {
+                Logger.LogError(ex, "Failed to send message via producer API");
+                statusMessage = $"Failed to send message: {ex.Message}";
+                isError = true;
+            }
         }
         finally
         {
