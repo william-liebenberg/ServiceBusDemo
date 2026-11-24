@@ -56,7 +56,12 @@ public partial class Home
                     ConsumerState.Unavailable => "The consumer is not ready for control. Check the consumer in Aspire; status will retry automatically.",
                     _ => null
                 };
-                var changed = lane.State != status.State || lane.RefreshError != error;
+                var confirmed = lane.UnconfirmedTarget == status.State;
+                var changed = lane.State != status.State || lane.RefreshError != error || confirmed;
+                if (confirmed)
+                {
+                    lane.UnconfirmedTarget = null;
+                }
                 lane.State = status.State;
                 lane.RefreshError = error;
                 if (changed)
@@ -91,7 +96,7 @@ public partial class Home
 
         lane.Version++; // A status read already in flight must not overwrite this action.
         lane.Changing = true;
-        lane.ActionError = null;
+        lane.UnconfirmedTarget = null;
         lane.RefreshError = null;
         try
         {
@@ -110,7 +115,7 @@ public partial class Home
                 Logger.LogWarning(ex, "Failed to {Action} {Consumer}", action, consumer);
                 lane.State = ex is ConsumerTransitionException { Status.State: ConsumerState.Mixed }
                     ? ConsumerState.Mixed : ConsumerState.Unavailable;
-                lane.ActionError = $"Could not confirm {action}. Check the consumer in Aspire and try again.";
+                lane.UnconfirmedTarget = ActionTarget(pause);
             }
         }
         finally
@@ -119,17 +124,23 @@ public partial class Home
         }
     }
 
+    private static ConsumerState ActionTarget(bool pause) => pause ? ConsumerState.Paused : ConsumerState.Running;
+
     private sealed class ControlLane
     {
         public ConsumerState? State { get; set; }
         public bool Changing { get; set; }
         public long Version { get; set; }
-        public string? ActionError { get; set; }
+        public ConsumerState? UnconfirmedTarget { get; set; }
         public string? RefreshError { get; set; }
 
         public string Badge => Changing ? "Updating…" : State?.ToString() ?? "Checking status…";
 
+        public string? Error => UnconfirmedTarget is { } target
+            ? $"Could not confirm {(target == ConsumerState.Paused ? "pause" : "resume")}. Check the consumer in Aspire and try again."
+            : RefreshError;
+
         public bool ActionDisabled(bool pause) => Changing || State is null or ConsumerState.Initializing or ConsumerState.Transitioning
-            || State == (pause ? ConsumerState.Paused : ConsumerState.Running);
+            || State == ActionTarget(pause);
     }
 }

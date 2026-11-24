@@ -59,7 +59,10 @@ public class ConsumerControlTests
                 Assert.Equal(HttpStatusCode.BadRequest, rejected.StatusCode);
             }
         }
+        using var unexpectedHost = await PostAsync(http, "pause", ConsumerControlProtocol.HeaderValue, "unexpected.example:5196");
+        Assert.Equal(HttpStatusCode.BadRequest, unexpectedHost.StatusCode);
         Assert.All(bus.Processors, processor => Assert.Equal(0, processor.Stops));
+        Assert.Equal(ConsumerState.Running, (await http.GetFromJsonAsync<ConsumerStatus>("/control/status", Token))!.State);
 
         bus.Processors[1].FailStop = true;
         using var failed = await PostAsync(http, "pause", ConsumerControlProtocol.HeaderValue);
@@ -146,9 +149,10 @@ public class ConsumerControlTests
 
     private static TaskCompletionSource NewSignal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    private static async Task<HttpResponseMessage> PostAsync(HttpClient http, string action, string? header)
+    private static async Task<HttpResponseMessage> PostAsync(HttpClient http, string action, string? header, string? host = null)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, $"/control/{action}");
+        request.Headers.Host = host;
         if (header is not null)
         {
             request.Headers.Add(ConsumerControlProtocol.HeaderName, header);

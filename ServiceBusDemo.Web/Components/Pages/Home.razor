@@ -169,11 +169,16 @@
                         <span class="visually-hidden">@consumer.Label status: </span><span class="consumer-state">@lane.Badge</span>
                     </span>
                     <button type="button" class="btn btn-outline-secondary btn-sm consumer-pause" aria-label="Pause @consumer.Label"
-                            disabled="@lane.ActionDisabled(true)" @onclick="() => ChangeConsumerAsync(consumer.Id, true)">Pause</button>
+                            aria-disabled="@(lane.ActionDisabled(true) ? "true" : null)" @onclick="() => ChangeConsumerAsync(consumer.Id, true)">Pause</button>
                     <button type="button" class="btn btn-outline-secondary btn-sm consumer-resume" aria-label="Resume @consumer.Label"
-                            disabled="@lane.ActionDisabled(false)" @onclick="() => ChangeConsumerAsync(consumer.Id, false)">Resume</button>
+                            aria-disabled="@(lane.ActionDisabled(false) ? "true" : null)" @onclick="() => ChangeConsumerAsync(consumer.Id, false)">Resume</button>
                 </div>
-                <div class="text-danger-emphasis consumer-error" role="status">@(lane.ActionError ?? lane.RefreshError)</div>
+                <div class="text-danger-emphasis consumer-error" role="status" aria-atomic="true">
+                    @if (lane.Error is { } error)
+                    {
+                        @($"{consumer.Label}: {error}")
+                    }
+                </div>
                 @if (!cards.Any())
                 {
                     <p class="text-body-secondary">No deliveries reported.</p>

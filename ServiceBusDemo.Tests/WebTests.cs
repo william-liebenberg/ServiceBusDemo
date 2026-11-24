@@ -6,6 +6,9 @@ using Bunit;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Hosting;
 using ServiceBusDemo.ServiceDefaults;
 using ServiceBusDemo.Web;
 using ServiceBusDemo.Web.Components.Pages;
@@ -68,6 +71,16 @@ public class WebTests
             }));
         }
 
+        // Capture the same discovery entries Aspire supplies to the running Web project.
+        var webDiscovery = new TaskCompletionSource<KeyValuePair<string, object>[]>(TaskCreationOptions.RunContinuationsAsynchronously);
+        appHost.Resources.Single(resource => resource.Name == "webfrontend").Annotations.Add(
+            new EnvironmentCallbackAnnotation(context =>
+            {
+                webDiscovery.TrySetResult(context.EnvironmentVariables
+                    .Where(entry => entry.Key.StartsWith("services__", StringComparison.OrdinalIgnoreCase))
+                    .ToArray());
+            }));
+
         await using var app = await appHost.BuildAsync(token);
         await app.StartAsync(token);
         foreach (var resource in new[] { "webfrontend", "consumer-one", "consumer-two" })
@@ -86,9 +99,20 @@ public class WebTests
         await WaitForReportsAsync(reports, broadcast, 2, token);
 
         await VerifyBurstsAsync(producer, observedFeed, token);
-        using var one = app.CreateHttpClient("consumer-one", "http");
-        using var two = app.CreateHttpClient("consumer-two", "http");
-        await VerifyConsumerControlAsync(producer, new ConsumerOneControlClient(one), new ConsumerTwoControlClient(two), reports, token);
+        var discovery = new Dictionary<string, string?>();
+        foreach (var (key, value) in await webDiscovery.Task.WaitAsync(token))
+        {
+            discovery.Add(key.Replace("__", ":"), value is IValueProvider provider
+                ? await provider.GetValueAsync(token)
+                : (string)value);
+        }
+        // Use the real Web registrations and discovery handlers against the Aspire resources,
+        // without adding a test control endpoint to the running Web app.
+        await using var webFactory = new WebApplicationFactory<DeliveryFeed>().WithWebHostBuilder(builder =>
+            builder.ConfigureAppConfiguration((_, config) => config.AddInMemoryCollection(discovery)));
+        var one = webFactory.Services.GetRequiredService<ConsumerOneControlClient>();
+        var two = webFactory.Services.GetRequiredService<ConsumerTwoControlClient>();
+        await VerifyConsumerControlAsync(producer, one, two, reports, token);
 
         var commandService = app.Services.GetRequiredService<ResourceCommandService>();
         var stop = await commandService.ExecuteCommandAsync("webfrontend", "resource-stop", token);
