@@ -148,6 +148,28 @@
     </div>
 }
 
+<section class="mt-4" aria-labelledby="depth-heading" aria-describedby="depth-note">
+    <h2 id="depth-heading" class="h5">Subscription depth</h2>
+    <div id="depth-status" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true">@depthAnnouncement</div>
+    <ul class="list-group mb-2">
+        @for (var index = 0; index < depthSubscriptions.Length; index++)
+        {
+            var (topic, subscription) = depthSubscriptions[index];
+            var count = pendingEstimates[index] = EstimatePending(topic, subscription, snapshot);
+            <li class="list-group-item depth-row">
+                <div><strong>Topic:</strong> <code>@topic</code> <strong>Subscription:</strong> <code>@subscription</code></div>
+                <span class="depth-pending">Estimated pending: @count</span>
+                <span class="d-block">Dead-letter: unavailable</span>
+            </li>
+        }
+    </ul>
+    <p id="depth-note" class="text-body-secondary">
+        Estimates cover acknowledged sends in this page session only, not external sends. Delivery reports are best-effort,
+        arrive before broker completion, and only the latest 200 are retained. Clearing the feed or reports aging out of it
+        can increase the estimate. Reloading loses this page’s sent history.
+    </p>
+</section>
+
 <section class="deliveries mt-4" aria-labelledby="deliveries-heading">
     <div class="d-flex align-items-center justify-content-between mb-2">
         <h2 id="deliveries-heading" class="h5 mb-0">Deliveries</h2>
