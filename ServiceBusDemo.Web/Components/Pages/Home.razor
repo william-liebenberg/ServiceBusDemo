@@ -134,7 +134,7 @@
             <div>
                 <div class="form-check">
                     <input id="burst-paced" type="checkbox" class="form-check-input" @bind="fixedRate" />
-                    <label class="form-check-label" for="burst-paced">Limit rate (unchecked: as fast as possible)</label>
+                    <label for="burst-paced" class="form-check-label">Limit rate (unchecked: as fast as possible)</label>
                 </div>
                 @if (fixedRate)
                 {
@@ -191,11 +191,13 @@
     </div>
 }
 
-<section class="deliveries mt-4" aria-labelledby="deliveries-heading">
+<section class="deliveries mt-4" aria-labelledby="deliveries-heading" aria-describedby="delivery-report-help">
     <div class="d-flex align-items-center justify-content-between mb-2">
         <h2 id="deliveries-heading" class="h5 mb-0">Deliveries</h2>
         <button type="button" class="btn btn-outline-secondary btn-sm" @onclick="Feed.Clear">Clear</button>
     </div>
+    <p id="delivery-report-help" class="text-body-secondary">Cards appear only after an attempt is settled, so a slow attempt won't appear while its delay is still running.
+        Reports can be lost; a missing card doesn't mean settlement failed.</p>
     <p class="text-body-secondary">Only recent reports are shown, across all tabs. Clear removes shared reports, not sent history or burst statistics.</p>
     <p class="text-body-secondary">Automatic lock renewal can extend a message's lock past the initial expiration shown on its card.
         A long handler delay does not guarantee lock expiry.</p>

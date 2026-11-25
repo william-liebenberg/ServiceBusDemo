@@ -52,6 +52,24 @@ public class HomeFailureTests
     }
 
     [Fact]
+    public async Task EmptyFeedExplainsWhenCardsAppearAndWhyTheyMayBeMissing()
+    {
+        await using var context = new BunitContext();
+        using var client = new HttpClient();
+        context.Services.AddSingleton(new ProducerApiClient(client));
+        context.Services.AddControlTestClients();
+        context.Services.AddSingleton(new DeliveryFeed());
+
+        var home = context.Render<Home>();
+
+        Assert.Empty(home.FindAll(".delivery-card"));
+        var help = home.Find(".deliveries[aria-describedby='delivery-report-help'] #delivery-report-help").TextContent;
+        Assert.Contains("only after an attempt is settled", help);
+        Assert.Contains("won't appear while its delay is still running", help);
+        Assert.Contains("Reports can be lost; a missing card doesn't mean settlement failed", help);
+    }
+
+    [Fact]
     public async Task SeparateAttemptCardsShowCountsAndOutcomes()
     {
         await using var context = new BunitContext();
