@@ -27,6 +27,20 @@ public partial class Home
             : null;
     }
 
+    private SendMessageRequest? CreateCompleteSendRequest(string message)
+    {
+        var failureRequest = CreateSendRequest();
+        var metadataRequest = SnapshotRequest(message);
+        return failureRequest is not null && metadataRequest is not null
+            ? metadataRequest with
+            {
+                FailFirstCount = failureRequest.FailFirstCount,
+                AlwaysFail = failureRequest.AlwaysFail,
+                DelaySeconds = failureRequest.DelaySeconds
+            }
+            : null;
+    }
+
     private void RevalidateFailFirst()
     {
         if (failFirstError is not null)

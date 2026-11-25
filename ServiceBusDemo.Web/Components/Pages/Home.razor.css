@@ -71,6 +71,19 @@
     --pattern-color: #008272;
 }
 
+.pattern-topic-filters {
+    --pattern-color: #0b5cab;
+}
+
+.reported-subscriptions,
+.sent-routing-properties code {
+    overflow-wrap: anywhere;
+}
+
+.sent-routing-properties code {
+    white-space: break-spaces;
+}
+
 .delivery-pattern {
     display: inline-block;
     padding: 0.15rem 0.5rem;
@@ -89,7 +102,18 @@
     outline-offset: 2px;
 }
 
-.delivery-card:focus-visible {
+.delivery-card:focus-visible,
+.table-responsive:focus-visible {
     outline: 3px solid var(--bs-emphasis-color);
     outline-offset: 2px;
+}
+
+.metadata-fields {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 11rem), 1fr));
+    gap: 0.5rem 1rem;
+}
+
+.sent-metadata {
+    min-inline-size: 10rem;
 }

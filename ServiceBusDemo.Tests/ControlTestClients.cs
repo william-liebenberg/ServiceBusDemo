@@ -22,10 +22,19 @@ internal static class ControlTestClients
         throw new InvalidOperationException("Expected page disposal to cancel status polling.");
     }
 
-    public static ConsumerStatus Status(string consumer, ConsumerState state) => new(consumer, state,
-        [new("CompetingConsumers", "business-events", "business-events", state == ConsumerState.Mixed ? ConsumerState.Running : state),
-         new("PubSub", "broadcast-events", consumer == "ConsumerOne" ? "consumer-one" : "consumer-two",
-             state == ConsumerState.Mixed ? ConsumerState.Paused : state)]);
+    public static ConsumerStatus Status(string consumer, ConsumerState state)
+    {
+        var first = consumer == "ConsumerOne";
+        var sharedState = state == ConsumerState.Mixed ? ConsumerState.Running : state;
+        var individualState = state == ConsumerState.Mixed ? ConsumerState.Paused : state;
+        string[] routed = first ? ["high-priority", "all"] : ["eu-orders"];
+        return new(consumer, state,
+        [
+            new("CompetingConsumers", "business-events", "business-events", sharedState),
+            new("PubSub", "broadcast-events", first ? "consumer-one" : "consumer-two", individualState),
+            .. routed.Select(subscription => new SubscriptionStatus("TopicFilters", "routed-events", subscription, individualState))
+        ]);
+    }
 
     public static HttpResponseMessage Reply(string consumer, ConsumerState state, HttpStatusCode code = HttpStatusCode.OK) =>
         new(code) { Content = JsonContent.Create(Status(consumer, state)) };

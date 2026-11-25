@@ -42,6 +42,8 @@ public partial class Home
             _ = PollConsumersAsync(pageLifetime.Token);
         }
 
+        QueueDepthAnnouncement();
+
         if (focusAfterRender is not { } target || disposed)
         {
             return;
@@ -103,13 +105,14 @@ public partial class Home
 
     private async Task SendBurstAsync()
     {
-        if (disposed || Busy)
+        if (disposed || Busy || IsTopicFilters)
         {
             return;
         }
 
+        statusMessage = null;
         var messageValid = await messageContext.ValidateAsync();
-        if (disposed || Busy)
+        if (disposed || Busy || IsTopicFilters)
         {
             return;
         }
@@ -119,8 +122,8 @@ public partial class Home
         var rateValid = !fixedRate || TryBoundedInteger(burstRate, 1000, out rate);
         countError = countValid ? null : "Enter a whole number from 1 to 500.";
         rateError = rateValid ? null : "Enter a whole number from 1 to 1000.";
-        var request = CreateSendRequest();
-        if (!messageValid || request is null || !countValid || !rateValid)
+        var request = CreateCompleteSendRequest(model.Message?.Trim() ?? "");
+        if (!messageValid || !countValid || !rateValid || request is null)
         {
             if (!messageValid && messageInput.Element is { } field)
             {
@@ -128,7 +131,14 @@ public partial class Home
             }
             else if (request is null)
             {
-                FocusInvalidFailureOption();
+                if (metadataErrors.Count > 0)
+                {
+                    FocusMetadataErrors();
+                }
+                else
+                {
+                    FocusInvalidFailureOption();
+                }
             }
             return;
         }
@@ -139,7 +149,6 @@ public partial class Home
         burst = tracker;
         burstAnnouncement = null;
         announcedCounts = null;
-        statusMessage = null;
         burstFailed = false;
         burstStatus = "Sending burst…";
         cancelPending = false;
@@ -197,7 +206,7 @@ public partial class Home
                 }
 
                 tracker.EndRequest(result.MessageId);
-                sentMessages.Insert(0, new SentMessage(result.MessageId, pattern, result.Topic, request.Message, DateTimeOffset.UtcNow));
+                sentMessages.Insert(0, new SentMessage(result.MessageId, pattern, result.Topic, request, DateTimeOffset.UtcNow));
                 StateHasChanged();
                 // Allow progress rendering and cancellation even with synchronously completed requests.
                 await Task.Yield();

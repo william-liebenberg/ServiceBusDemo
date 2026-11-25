@@ -71,7 +71,7 @@ app.MapPost("/api/deliveries", async (HttpRequest request, DeliveryFeed feed, IO
     }
 
     if (delivery is null
-        || delivery.Pattern is not ("CompetingConsumers" or "PubSub")
+        || delivery.Pattern is not ("CompetingConsumers" or "PubSub" or "TopicFilters")
         || string.IsNullOrWhiteSpace(delivery.MessageId)
         || string.IsNullOrWhiteSpace(delivery.Consumer)
         || string.IsNullOrWhiteSpace(delivery.Topic)

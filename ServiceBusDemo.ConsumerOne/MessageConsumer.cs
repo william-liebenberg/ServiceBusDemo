@@ -8,4 +8,6 @@ public sealed class MessageConsumer(
     IConfiguration configuration,
     ILogger<MessageConsumer> logger,
     DeliveryReportQueue reports)
-    : ControlledMessageConsumer(client, configuration, logger, reports, "ConsumerOne", "consumer-one");
+    : ControlledMessageConsumer(client, configuration, logger, reports, "ConsumerOne", "consumer-one",
+        configuration["ServiceBus:HighPrioritySubscriptionName"] ?? "high-priority",
+        configuration["ServiceBus:AllRoutedSubscriptionName"] ?? "all");

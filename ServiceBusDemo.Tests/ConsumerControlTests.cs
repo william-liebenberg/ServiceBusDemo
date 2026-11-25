@@ -18,7 +18,7 @@ public class ConsumerControlTests
     [InlineData(false, "ConsumerTwo", "consumer-two")]
     public async Task EndpointsEnforceHeaderAndReportConfiguredProcessors(bool first, string name, string broadcast)
     {
-        var bus = new FakeBus();
+        var bus = new FakeBus(first ? 4 : 3);
         if (first)
         {
             await VerifyEndpointsAsync<ConsumerOne.MessageConsumer>(bus, name, broadcast);
@@ -37,6 +37,10 @@ public class ConsumerControlTests
             builder.UseSetting("ConnectionStrings:messaging", "Endpoint=sb://localhost/;SharedAccessKeyName=test;SharedAccessKey=test");
             builder.UseSetting("ServiceBus:TopicName", "configured-topic");
             builder.UseSetting("ServiceBus:SubscriptionName", "configured-subscription");
+            builder.UseSetting("ServiceBus:RoutedTopicName", "configured-routed");
+            builder.UseSetting("ServiceBus:HighPrioritySubscriptionName", "configured-high");
+            builder.UseSetting("ServiceBus:AllRoutedSubscriptionName", "configured-all");
+            builder.UseSetting("ServiceBus:EuOrdersSubscriptionName", "configured-eu");
             builder.ConfigureTestServices(services => services.AddSingleton<ServiceBusClient>(bus));
         });
         using var http = factory.CreateClient(new() { BaseAddress = new Uri("https://localhost"), AllowAutoRedirect = false });
@@ -46,11 +50,15 @@ public class ConsumerControlTests
         var status = await http.GetFromJsonAsync<ConsumerStatus>("/control/status", Token);
         Assert.Equal(name, status!.Consumer);
         Assert.Equal(ConsumerState.Running, status.State);
-        Assert.Equal(new SubscriptionStatus[]
-        {
+        string[] routed = name == "ConsumerOne" ? ["configured-high", "configured-all"] : ["configured-eu"];
+        SubscriptionStatus[] expectedSubscriptions =
+        [
             new("CompetingConsumers", "configured-topic", "configured-subscription", ConsumerState.Running),
-            new("PubSub", "broadcast-events", broadcast, ConsumerState.Running)
-        }, status.Subscriptions);
+            new("PubSub", "broadcast-events", broadcast, ConsumerState.Running),
+            .. routed.Select(subscription => new SubscriptionStatus("TopicFilters", "configured-routed", subscription, ConsumerState.Running))
+        ];
+        Assert.Equal(expectedSubscriptions, status.Subscriptions);
+        Assert.Equal(expectedSubscriptions.Select(s => (s.Topic, s.Subscription)), bus.Entities);
         foreach (var action in new[] { "pause", "resume" })
         {
             foreach (var invalidHeader in new[] { null, "wrong", "1, 1" })
@@ -69,7 +77,8 @@ public class ConsumerControlTests
         Assert.Equal(HttpStatusCode.ServiceUnavailable, failed.StatusCode);
         var mixed = await failed.Content.ReadFromJsonAsync<ConsumerStatus>(Token);
         Assert.Equal(ConsumerState.Mixed, mixed!.State);
-        Assert.Equal(new[] { ConsumerState.Paused, ConsumerState.Running }, mixed.Subscriptions.Select(s => s.State));
+        Assert.Equal(expectedSubscriptions.Select((_, i) => i == 1 ? ConsumerState.Running : ConsumerState.Paused),
+            mixed.Subscriptions.Select(s => s.State));
         bus.Processors[1].FailStop = false;
 
         foreach (var (action, expected) in new[] { ("pause", ConsumerState.Paused), ("resume", ConsumerState.Running) })
@@ -85,6 +94,7 @@ public class ConsumerControlTests
         }
         Assert.Equal(1, bus.Processors[0].Stops);
         Assert.Equal(2, bus.Processors[1].Stops);
+        Assert.All(bus.Processors.Skip(2), p => Assert.Equal(1, p.Stops));
         Assert.All(bus.Processors, p => { Assert.Equal(2, p.Starts); Assert.Equal(0, p.Closes); });
         await consumer.StopAsync(Token);
         using var unavailable = await PostAsync(http, "pause", ConsumerControlProtocol.HeaderValue);
@@ -98,7 +108,7 @@ public class ConsumerControlTests
     [InlineData(false)]
     public async Task InitializationTransitionsAndShutdownDoNotOverlap(bool first)
     {
-        var bus = new FakeBus();
+        var bus = new FakeBus(first ? 4 : 3);
         var builder = Host.CreateApplicationBuilder();
         builder.Services.AddDeliveryReporting();
         using var host = builder.Build();
@@ -110,7 +120,7 @@ public class ConsumerControlTests
         bus.Processors[0].BeforeStart = startup.Task;
         await consumer.StartAsync(Token);
         Assert.Equal(ConsumerState.Initializing, consumer.GetStatus().State);
-        Assert.Equal(2, consumer.GetStatus().Subscriptions.Count);
+        Assert.Equal(first ? 4 : 3, consumer.GetStatus().Subscriptions.Count);
         Assert.False((await consumer.PauseAsync(Token)).Succeeded);
         startup.SetResult();
         await consumer.ExecuteTask!.WaitAsync(Deadline, Token);
@@ -160,13 +170,17 @@ public class ConsumerControlTests
         return await http.SendAsync(request, Token);
     }
 
-    private sealed class FakeBus : ServiceBusClient
+    private sealed class FakeBus(int processorCount) : ServiceBusClient
     {
-        public FakeProcessor[] Processors { get; } = [new(), new()];
-        private int next;
+        public FakeProcessor[] Processors { get; } = Enumerable.Range(0, processorCount).Select(_ => new FakeProcessor()).ToArray();
+        public List<(string Topic, string Subscription)> Entities { get; } = [];
 
         public override ServiceBusProcessor CreateProcessor(string topicName, string subscriptionName, ServiceBusProcessorOptions options)
-            => Processors[next++];
+        {
+            var processor = Processors[Entities.Count];
+            Entities.Add((topicName, subscriptionName));
+            return processor;
+        }
     }
 
     private sealed class FakeProcessor : ServiceBusProcessor

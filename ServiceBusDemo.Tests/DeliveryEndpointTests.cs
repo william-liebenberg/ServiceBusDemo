@@ -24,6 +24,7 @@ public class DeliveryEndpointTests
     [InlineData("CompetingConsumers", "Order placed", "application/json")]
     [InlineData("PubSub", "", "application/json; charset=utf-8")]
     [InlineData("PubSub", "Order placed", "application/json; charset=\"UTF-8\"")]
+    [InlineData("TopicFilters", "Order placed", "application/json")]
     public async Task ValidDeliveryIsAcceptedAndAddedToSingletonFeed(string pattern, string body, string contentType)
     {
         await using var factory = new WebApplicationFactory<DeliveryFeed>();
@@ -40,6 +41,26 @@ public class DeliveryEndpointTests
         Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
         Assert.Equal(delivery, Assert.Single(feed.Snapshot()));
         Assert.Equal(1, notifications);
+    }
+
+    [Fact]
+    public async Task MetadataSurvivesJsonRoundTripAndIsRetainedByTheFeed()
+    {
+        await using var factory = new WebApplicationFactory<DeliveryFeed>();
+        using var client = CreateClient(factory);
+        var report = Example with
+        {
+            Subject = "Broker subject", CorrelationId = "42",
+            ApplicationProperties = new Dictionary<string, string> { ["Priority"] = "High", ["tag"] = " <b>text</b> " }
+        };
+        using var response = await client.PostAsJsonAsync("/api/deliveries", report, TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+        var retained = Assert.Single(factory.Services.GetRequiredService<DeliveryFeed>().Snapshot());
+        Assert.Equal(report.Subject, retained.Subject);
+        Assert.Equal(report.CorrelationId, retained.CorrelationId);
+        Assert.Equal("High", retained.ApplicationProperties!["Priority"]);
+        Assert.Equal(" <b>text</b> ", retained.ApplicationProperties["tag"]);
     }
 
     [Fact]

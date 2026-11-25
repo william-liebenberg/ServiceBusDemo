@@ -17,7 +17,7 @@ public class DeliveryReportingTests
     [Theory]
     [InlineData("ConsumerOne", "consumer-one")]
     [InlineData("ConsumerTwo", "consumer-two")]
-    public async Task BothProcessorsPostTheBrokerDelivery(string consumerName, string broadcastSubscription)
+    public async Task EachProcessorPostsTheBrokerDelivery(string consumerName, string broadcastSubscription)
     {
         var token = TestContext.Current.CancellationToken;
         using var handler = new RecordingHandler(_ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.Accepted)));
@@ -29,14 +29,20 @@ public class DeliveryReportingTests
         await consumer.StartAsync(token);
         await consumer.ExecuteTask!.WaitAsync(WaitLimit, token);
 
-        Assert.Equal(2, bus.Processors.Count);
+        string[] routed = consumerName == "ConsumerOne" ? ["high-priority", "all"] : ["eu-orders"];
+        var count = 2 + routed.Length;
+        Assert.Equal(count, bus.Processors.Count);
         var before = DateTimeOffset.UtcNow;
         foreach (var processor in bus.Processors)
         {
             await processor.DeliverAsync(NewMessage(processor.Topic), token).WaitAsync(WaitLimit, token);
         }
 
-        var requests = new[] { await handler.NextAsync(token), await handler.NextAsync(token) };
+        var requests = new List<Request>();
+        for (var i = 0; i < count; i++)
+        {
+            requests.Add(await handler.NextAsync(token));
+        }
         Assert.All(requests, request =>
         {
             Assert.Equal(HttpMethod.Post, request.Method);
@@ -47,15 +53,21 @@ public class DeliveryReportingTests
             Assert.Equal("order £42", request.Delivery.Body);
             Assert.Equal(4, request.Delivery.DeliveryCount);
             Assert.Equal(DeliveryOutcomes.Completed, request.Delivery.Outcome);
+            Assert.Equal("Broker subject", request.Delivery.Subject);
+            Assert.Equal("order-42", request.Delivery.CorrelationId);
+            Assert.Equal("High", request.Delivery.ApplicationProperties!["Priority"]);
+            Assert.Equal("2.5", request.Delivery.ApplicationProperties["Weight"]);
             Assert.InRange(request.Delivery.ReceivedAt, before, DateTimeOffset.UtcNow);
             Assert.InRange(request.Delivery.SettledAt, request.Delivery.ReceivedAt, DateTimeOffset.UtcNow);
             Assert.Equal(InitialLock, request.Delivery.InitialLockedUntil);
         });
         Assert.Equal(("CompetingConsumers", "business-events", "business-events", "business-events"), Routing(requests[0].Delivery));
         Assert.Equal(("PubSub", "broadcast-events", broadcastSubscription, "broadcast-events"), Routing(requests[1].Delivery));
+        Assert.Equal(routed.Select(subscription => ("TopicFilters", "routed-events", subscription, "routed-events")),
+            requests.Skip(2).Select(request => Routing(request.Delivery)));
         await consumer.StopAsync(token);
         await host.StopAsync(token);
-        Assert.Equal(2, handler.Attempts);
+        Assert.Equal(count, handler.Attempts);
         Assert.Empty(logs.Messages);
     }
 
@@ -216,7 +228,9 @@ public class DeliveryReportingTests
 
     private static ServiceBusReceivedMessage NewMessage(string id, int count = 4, Dictionary<string, object>? properties = null) =>
         ServiceBusModelFactory.ServiceBusReceivedMessage(body: BinaryData.FromString("order £42"), messageId: id,
-            deliveryCount: count, properties: properties, lockedUntil: InitialLock);
+            deliveryCount: count, subject: "Broker subject", correlationId: "order-42",
+            properties: properties ?? new Dictionary<string, object> { ["Priority"] = "High", ["Weight"] = 2.5 },
+            lockedUntil: InitialLock);
 
     private static IHost CreateHost(RecordingHandler handler, WarningLog logs, Action<HttpClient>? configure = null)
     {

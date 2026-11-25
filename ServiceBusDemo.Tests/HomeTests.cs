@@ -16,6 +16,80 @@ public class HomeTests
     private const string Highlighted = ".delivery-highlighted";
     private const string DeliveryStatus = "#delivery-status[role=status][aria-live=polite][aria-atomic=true] span";
 
+    [Fact]
+    public async Task AdvancedEditorValidatesRowsAndSendsAnIndependentHistorySnapshot()
+    {
+        using var handler = new RecordingHandler(_ => Accepted("id"));
+        using var client = CreateClient(handler);
+        await using var context = CreateContext(client, new DeliveryFeed());
+        var home = context.Render<Home>();
+        home.Find("#message").Change(EnteredMessage);
+        home.Find("#advanced-subject").Input(new string('s', 129));
+        home.Find("#advanced-priority").Change("High");
+        home.Find("#advanced-region").Input(new string('r', 1025));
+        home.Find("#add-property").Click();
+        home.Find("#property-key-1").Input("priority");
+        home.Find("#property-value-1").Input(" ");
+        home.Find("#add-property").Click();
+        home.Find("#property-key-2").Input(new string('k', 129));
+        home.Find("#property-value-2").Input(new string('v', 1025));
+
+        await home.Find("form").SubmitAsync();
+
+        Assert.Empty(handler.Requests);
+        var errors = home.Find("#advanced-errors[role=alert]").TextContent;
+        Assert.Contains("duplicate key: priority", errors);
+        Assert.Contains("Property 1 value must be non-blank", errors);
+        Assert.Contains("Property 2 key must be non-blank and at most 128", errors);
+        Assert.Contains("Property 2 value must be non-blank and at most 1024", errors);
+        Assert.Contains("Subject must be at most 128", errors);
+        Assert.Contains("Region must be at most 1024", errors);
+        Assert.Single(home.FindAll("label[for=property-key-1]"));
+
+        home.Find("button[aria-label='Remove property 2']").Click();
+        home.Find("#advanced-subject").Input(" Subject ");
+        home.Find("#advanced-region").Input(" West ");
+        home.Find("#property-key-1").Input(" Tag ");
+        home.Find("#property-value-1").Input(" Value ");
+        await home.Find("form").SubmitAsync();
+
+        var request = Assert.Single(handler.Payloads);
+        Assert.Equal(" Subject ", request.Subject);
+        Assert.Null(request.CorrelationId);
+        Assert.Equal("High", request.ApplicationProperties!["Priority"]);
+        Assert.Equal(" West ", request.ApplicationProperties["Region"]);
+        Assert.Equal(" Value ", request.ApplicationProperties[" Tag "]);
+        Assert.Empty(home.Find("#advanced-errors").TextContent.Trim());
+        home.Find("#advanced-subject").Input("New subject");
+        home.Find("button[aria-label='Remove property 1']").Click();
+        var history = home.Find(".sent-metadata").TextContent;
+        Assert.Contains(" Subject ", history);
+        Assert.Contains(" Value ", history);
+        Assert.DoesNotContain("New subject", history);
+    }
+
+    [Fact]
+    public async Task DeliveryMetadataRendersAsTextAndLegacyCardsHaveNoMetadataList()
+    {
+        using var client = new HttpClient();
+        var feed = new DeliveryFeed();
+        feed.Add(Delivery("legacy", "ConsumerTwo"));
+        feed.Add(Delivery("metadata", "ConsumerOne") with
+        {
+            Subject = "<b>subject</b>", CorrelationId = "<b>correlation</b>",
+            ApplicationProperties = new Dictionary<string, string> { ["<b>key</b>"] = "<b>value</b>" }
+        });
+        await using var context = CreateContext(client, feed);
+        var home = context.Render<Home>();
+
+        var metadata = home.Find("#ConsumerOne .message-metadata");
+        Assert.Empty(metadata.QuerySelectorAll("b"));
+        Assert.Contains("<b>subject</b>", metadata.TextContent);
+        Assert.Contains("<b>correlation</b>", metadata.TextContent);
+        Assert.Contains("<b>key</b>: <b>value</b>", metadata.TextContent);
+        Assert.Empty(home.FindAll("#ConsumerTwo .message-metadata, #ConsumerTwo .delivery-card ul"));
+    }
+
     [Theory]
     [InlineData("#pattern-competing", "/sendMessage", "business-events")]
     [InlineData("#pattern-pubsub", "/broadcastMessage", "broadcast-events")]
@@ -44,7 +118,7 @@ public class HomeTests
         Assert.Equal(new[] { TrimmedMessage, TrimmedMessage }, home.FindAll("tbody td:nth-child(5)").Select(cell => cell.TextContent));
         Assert.All(home.FindAll("tbody td:last-child"), cell => Assert.Equal("None reported", cell.TextContent));
         Assert.Single(home.FindAll(".table-responsive[tabindex='0'][aria-describedby=sent-consumers-note] table"));
-        Assert.Contains("retained reports only and may be incomplete", home.Find("#sent-consumers-note").TextContent);
+        Assert.Contains("Only retained delivery reports are shown", home.Find("#sent-consumers-note").TextContent);
     }
 
     [Fact]
@@ -366,11 +440,13 @@ public class HomeTests
         public RecordingHandler(Func<int, HttpResponseMessage> createResponse) : this(number => Task.FromResult(createResponse(number))) { }
 
         public List<(HttpMethod Method, string Path, string Message)> Requests { get; } = [];
+        public List<SendMessageRequest> Payloads { get; } = [];
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             var body = await request.Content!.ReadFromJsonAsync<SendMessageRequest>(cancellationToken);
             Requests.Add((request.Method, request.RequestUri!.AbsolutePath, body!.Message));
+            Payloads.Add(body);
             return await createResponse(Requests.Count);
         }
     }

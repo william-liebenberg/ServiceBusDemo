@@ -4,7 +4,7 @@ using ServiceBusDemo.ServiceDefaults;
 
 namespace ServiceBusDemo.Web;
 
-public abstract class ConsumerControlClient(HttpClient client, string consumer)
+public abstract class ConsumerControlClient(HttpClient client, string consumer, int subscriptionCount)
 {
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(15);
     // The two subscription processors are stopped sequentially and each can have a slow handler in flight.
@@ -47,7 +47,7 @@ public abstract class ConsumerControlClient(HttpClient client, string consumer)
     {
         var status = await response.Content.ReadFromJsonAsync<ConsumerStatus>(token);
         if (status?.Consumer != consumer || !Enum.IsDefined(status.State)
-            || status.Subscriptions is not { Count: 2 }
+            || status.Subscriptions is null || status.Subscriptions.Count != subscriptionCount
             || status.Subscriptions.Any(subscription => subscription is null || !Enum.IsDefined(subscription.State))
             || (status.State is ConsumerState.Running or ConsumerState.Paused
                 && status.Subscriptions.Any(subscription => subscription.State != status.State)))
@@ -63,9 +63,11 @@ public sealed class ConsumerTransitionException(ConsumerStatus status) : Excepti
     public ConsumerStatus Status { get; } = status;
 }
 
-public sealed class ConsumerOneControlClient(HttpClient client) : ConsumerControlClient(client, BurstDeliveryTracker.ConsumerOneId);
+public sealed class ConsumerOneControlClient(HttpClient client)
+    : ConsumerControlClient(client, BurstDeliveryTracker.ConsumerOneId, subscriptionCount: 4);
 
-public sealed class ConsumerTwoControlClient(HttpClient client) : ConsumerControlClient(client, BurstDeliveryTracker.ConsumerTwoId);
+public sealed class ConsumerTwoControlClient(HttpClient client)
+    : ConsumerControlClient(client, BurstDeliveryTracker.ConsumerTwoId, subscriptionCount: 3);
 
 internal static class ConsumerControlClientRegistration
 {

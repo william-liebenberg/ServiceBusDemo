@@ -13,7 +13,10 @@ public sealed record DeliveryEvent(
     [property: JsonRequired] DateTimeOffset ReceivedAt,
     [property: JsonRequired] string Outcome,
     [property: JsonRequired] DateTimeOffset InitialLockedUntil,
-    [property: JsonRequired] DateTimeOffset SettledAt);
+    [property: JsonRequired] DateTimeOffset SettledAt,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Subject = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? CorrelationId = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IReadOnlyDictionary<string, string>? ApplicationProperties = null);
 
 public static class DeliveryOutcomes
 {
