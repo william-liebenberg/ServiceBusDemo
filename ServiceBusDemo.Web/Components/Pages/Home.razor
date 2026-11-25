@@ -150,12 +150,15 @@
 
 <section class="mt-4" aria-labelledby="depth-heading" aria-describedby="depth-note">
     <h2 id="depth-heading" class="h5">Subscription depth</h2>
+    <div id="depth-status" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true">@depthAnnouncement</div>
     <ul class="list-group mb-2">
-        @foreach (var (topic, subscription) in depthSubscriptions)
+        @for (var index = 0; index < depthSubscriptions.Length; index++)
         {
+            var (topic, subscription) = depthSubscriptions[index];
+            var count = pendingEstimates[index] = EstimatePending(topic, subscription, snapshot);
             <li class="list-group-item depth-row">
                 <div><strong>Topic:</strong> <code>@topic</code> <strong>Subscription:</strong> <code>@subscription</code></div>
-                <span class="depth-pending">Estimated pending: @EstimatePending(topic, subscription, snapshot)</span>
+                <span class="depth-pending">Estimated pending: @count</span>
                 <span class="d-block">Dead-letter: unavailable</span>
             </li>
         }

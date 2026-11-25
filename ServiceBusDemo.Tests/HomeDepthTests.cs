@@ -24,6 +24,42 @@ public class HomeDepthTests
     }
 
     [Fact]
+    public async Task DepthLiveRegionCoalescesBurstAndAnnouncesOnlyChangedSubscriptions()
+    {
+        var feed = new DeliveryFeed();
+        await using var context = CreateContext(feed);
+        var home = context.Render<Home>();
+        const string region = "#depth-status[role=status][aria-live=polite][aria-atomic=true]";
+        Assert.Empty(home.Find(region).TextContent);
+
+        home.Find("#message").Change("Order 42");
+        var radio = (IHtmlInputElement)home.Find("#pattern-pubsub");
+        radio.Change(radio.Value);
+        home.Find("#burst-count").Input("3");
+        await home.InvokeAsync(async () =>
+        {
+            await home.Find("#burst-form").SubmitAsync();
+            AssertDepth(home, 0, 3, 3);
+            Assert.Empty(home.Find(region).TextContent);
+        });
+        await home.WaitForAssertionAsync(() => Assert.Equal(
+            "Topic broadcast-events, subscription consumer-one: estimated pending 3. " +
+            "Topic broadcast-events, subscription consumer-two: estimated pending 3.",
+            home.Find(region).TextContent), TimeSpan.FromSeconds(5));
+
+        await home.InvokeAsync(() =>
+        {
+            Report(feed, "1", "broadcast-events", "consumer-one");
+            Report(feed, "2", "broadcast-events", "consumer-one");
+            Report(feed, "2", "broadcast-events", "consumer-one");
+        });
+        await home.WaitForAssertionAsync(() => Assert.Equal(
+            "Topic broadcast-events, subscription consumer-one: estimated pending 1.",
+            home.Find(region).TextContent), TimeSpan.FromSeconds(5));
+        AssertDepth(home, 0, 1, 3);
+    }
+
+    [Fact]
     public async Task PausingAndResumingConsumersShowsSharedAndBroadcastBacklogs()
     {
         var feed = new DeliveryFeed();

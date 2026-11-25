@@ -42,6 +42,8 @@ public partial class Home
             _ = PollConsumersAsync(pageLifetime.Token);
         }
 
+        QueueDepthAnnouncement();
+
         if (focusAfterRender is not { } target || disposed)
         {
             return;
