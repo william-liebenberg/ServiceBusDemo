@@ -1,4 +1,5 @@
 using Azure.Messaging.ServiceBus;
+using ServiceBusDemo.ServiceDefaults;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -45,11 +46,44 @@ static async Task<IResult> PublishAsync(SendMessageRequest request, ServiceBusSe
         return Results.BadRequest("Message is required.");
     }
 
+    if (request.Subject is not null && !MessageMetadataRules.IsValid(request.Subject, MessageMetadataRules.NameLimit))
+    {
+        return Results.BadRequest($"Subject must be non-blank and at most {MessageMetadataRules.NameLimit} characters.");
+    }
+
+    if (request.CorrelationId is not null && !MessageMetadataRules.IsValid(request.CorrelationId, MessageMetadataRules.NameLimit))
+    {
+        return Results.BadRequest($"CorrelationId must be non-blank and at most {MessageMetadataRules.NameLimit} characters.");
+    }
+
+    if (request.ApplicationProperties is { } properties && properties.Any(property =>
+            !MessageMetadataRules.IsValid(property.Key, MessageMetadataRules.NameLimit) ||
+            !MessageMetadataRules.IsValid(property.Value, MessageMetadataRules.ValueLimit)))
+    {
+        return Results.BadRequest($"Application property keys and values must be non-blank and at most {MessageMetadataRules.NameLimit} and {MessageMetadataRules.ValueLimit} characters, respectively.");
+    }
+
     var message = new ServiceBusMessage(request.Message)
     {
         MessageId = Guid.NewGuid().ToString(),
         ContentType = "text/plain"
     };
+
+    if (request.Subject is not null)
+    {
+        message.Subject = request.Subject;
+    }
+    if (request.CorrelationId is not null)
+    {
+        message.CorrelationId = request.CorrelationId;
+    }
+    if (request.ApplicationProperties is not null)
+    {
+        foreach (var (key, value) in request.ApplicationProperties)
+        {
+            message.ApplicationProperties.Add(key, value);
+        }
+    }
 
     await sender.SendMessageAsync(message, cancellationToken);
     logger.LogInformation("Sent message {MessageId} to topic {Topic}: {Body}", message.MessageId, sender.EntityPath, request.Message);
@@ -57,7 +91,10 @@ static async Task<IResult> PublishAsync(SendMessageRequest request, ServiceBusSe
     return Results.Accepted(value: new { message.MessageId, Topic = sender.EntityPath });
 }
 
-record SendMessageRequest(string Message);
+record SendMessageRequest(string Message, string? Subject = null, string? CorrelationId = null,
+    Dictionary<string, string>? ApplicationProperties = null);
+
+public sealed class ProducerEndpointAssembly;
 
 static class SenderKeys
 {

@@ -1,0 +1,33 @@
+@if (!string.IsNullOrEmpty(Subject) || !string.IsNullOrEmpty(CorrelationId) || ApplicationProperties is { Count: > 0 })
+{
+    <dl class="message-metadata mb-0">
+        @if (!string.IsNullOrEmpty(Subject))
+        {
+            <dt>Subject</dt>
+            <dd>@Subject</dd>
+        }
+        @if (!string.IsNullOrEmpty(CorrelationId))
+        {
+            <dt>Correlation ID</dt>
+            <dd>@CorrelationId</dd>
+        }
+        @if (ApplicationProperties is { Count: > 0 })
+        {
+            <dt>Application properties</dt>
+            <dd>
+                <ul class="mb-0 ps-3">
+                    @foreach (var (key, value) in ApplicationProperties)
+                    {
+                        <li><code>@key</code>: @value</li>
+                    }
+                </ul>
+            </dd>
+        }
+    </dl>
+}
+
+@code {
+    [Parameter] public string? Subject { get; set; }
+    [Parameter] public string? CorrelationId { get; set; }
+    [Parameter] public IReadOnlyDictionary<string, string>? ApplicationProperties { get; set; }
+}

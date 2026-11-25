@@ -1,0 +1,7 @@
+.message-metadata {
+    overflow-wrap: anywhere;
+}
+
+.message-metadata dd {
+    white-space: pre-wrap;
+}

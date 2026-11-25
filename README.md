@@ -171,6 +171,12 @@ To observe the difference, send one message with each pattern and look at the co
 - **Competing consumers:** find `[CompetingConsumers]`; only one of the two consumers handles a given message in the normal case.
 - **Publish/subscribe:** find `[PubSub]`; both consumers log the same message ID, each from its own subscription.
 
+### Add message metadata
+
+Open **Advanced** to set a Subject, select a Priority (`Low`, `Normal`, or `High`), enter a Region, or add and remove custom key/value rows. Blank Subject and Region and an unselected Priority are omitted. Priority and Region are sent as application properties named `Priority` and `Region`. Custom rows require both a key and a value; keys cannot duplicate another row or a populated dedicated field, ignoring case.
+
+The same controls apply to single sends and bursts. A burst captures the Advanced settings once before sending and uses them for every message. **Sent this session** shows the metadata captured for each acknowledged send; delivery cards show the metadata the consumers actually received from the broker.
+
 ### Try a burst
 
 Choose a pattern and enter a message. Set **Count** (1–500, default 10), leave **Limit rate** unchecked to go as fast as possible, or enable it and enter a whole-number rate (1–1000 messages per second). Select **Send burst** and watch the acknowledged-send progress and the two consumer bars. Try each pattern: with all reports arriving once, the competing-consumer bars sum to the acknowledged send count, while each pub/sub bar reaches that count.
@@ -217,9 +223,24 @@ curl -X POST "<producer-url>/broadcastMessage" \
 
 A successful request returns `202 Accepted` with the generated `messageId` and topic name. The API rejects an empty message with `400 Bad Request`.
 
+Both routes also accept optional `subject`, `correlationId`, and a string-valued `applicationProperties` object. Existing message-only requests still work, and each optional field can be omitted or set to `null`. For example:
+
+```json
+{
+  "message": "Order 42 was placed",
+  "subject": "Order placed",
+  "correlationId": "order-42",
+  "applicationProperties": { "Priority": "High", "Region": "West" }
+}
+```
+
+Subject, CorrelationId, and application-property keys are limited to 128 characters; property values are limited to 1024. Supplied strings must contain a non-whitespace character, and property values cannot be null. Valid text is preserved without trimming. Invalid metadata returns `400 Bad Request` without sending. CorrelationId is set through the API, not the UI.
+
 ## Delivery event ingest
 
 `POST /api/deliveries` on **webfrontend** accepts a JSON [`DeliveryEvent`](ServiceBusDemo.ServiceDefaults/DeliveryEvent.cs) and returns `202 Accepted` for a valid event. After logging a delivery, each consumer queues a report that includes the broker's delivery count. Each consumer can queue up to 256 reports and sends them in the background with a two-second timeout and no retries. If Web is unavailable or the reporting queue is full, reports may be lost without affecting Service Bus processing. Pending reports are discarded at shutdown.
+
+Reports may include the broker's `subject`, `correlationId`, and `applicationProperties`. Application-property values from other producers are formatted as strings for display; older reports can omit all metadata.
 
 The feed keeps the most recent 200 events in memory and loses them when the Web app restarts. The endpoint is unauthenticated and intended only for the local demo. Do not expose it publicly: any caller can submit events, and the 200-event cap limits the number of entries, not the size of each event.
 

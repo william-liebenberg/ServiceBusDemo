@@ -119,7 +119,8 @@ public partial class Home
         var rateValid = !fixedRate || TryBoundedInteger(burstRate, 1000, out rate);
         countError = countValid ? null : "Enter a whole number from 1 to 500.";
         rateError = rateValid ? null : "Enter a whole number from 1 to 1000.";
-        if (!messageValid || !countValid || !rateValid)
+        var request = SnapshotRequest(model.Message?.Trim() ?? "");
+        if (!messageValid || !countValid || !rateValid || request is null)
         {
             if (!messageValid && messageInput.Element is { } field)
             {
@@ -128,7 +129,6 @@ public partial class Home
             return;
         }
 
-        var message = model.Message!.Trim();
         var pattern = model.Pattern;
         burst?.Dispose();
         var tracker = new BurstDeliveryTracker(Feed, pattern, count);
@@ -168,7 +168,7 @@ public partial class Home
                 SendMessageResult result;
                 try
                 {
-                    result = await ProducerApi.SendMessageAsync(message, pattern, requestToken);
+                    result = await ProducerApi.SendMessageAsync(request, pattern, requestToken);
                     previousResponse = Stopwatch.GetTimestamp();
                     if (string.IsNullOrWhiteSpace(result.MessageId))
                     {
@@ -193,7 +193,7 @@ public partial class Home
                 }
 
                 tracker.EndRequest(result.MessageId);
-                sentMessages.Insert(0, new SentMessage(result.MessageId, pattern, result.Topic, message, DateTimeOffset.UtcNow));
+                sentMessages.Insert(0, new SentMessage(result.MessageId, pattern, result.Topic, request, DateTimeOffset.UtcNow));
                 StateHasChanged();
                 // Allow progress rendering and cancellation even with synchronously completed requests.
                 await Task.Yield();

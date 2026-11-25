@@ -65,6 +65,63 @@
         </div>
     </div>
 
+    <details class="mb-3">
+        <summary id="advanced-heading">Advanced</summary>
+        <fieldset class="my-2" disabled="@Busy" aria-labelledby="advanced-heading" aria-describedby="advanced-errors">
+            <p class="text-body-secondary">Optional metadata for single sends and bursts.</p>
+            <div class="metadata-fields mb-2">
+                <div>
+                    <label class="form-label" for="advanced-subject">Subject</label>
+                    <input class="form-control" id="advanced-subject" @bind="subject" @bind:event="oninput" />
+                </div>
+                <div>
+                    <label class="form-label" for="advanced-priority">Priority</label>
+                    <select class="form-select" id="advanced-priority" @bind="priority">
+                        <option value="">Not set</option>
+                        <option>Low</option>
+                        <option>Normal</option>
+                        <option>High</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="form-label" for="advanced-region">Region</label>
+                    <input class="form-control" id="advanced-region" @bind="region" @bind:event="oninput" />
+                </div>
+            </div>
+            @for (var i = 0; i < propertyRows.Count; i++)
+            {
+                var row = propertyRows[i];
+                var number = i + 1;
+                var keyId = $"property-key-{row.Id}";
+                var valueId = $"property-value-{row.Id}";
+                <div class="metadata-fields align-items-end mb-2" @key="row">
+                    <div>
+                        <label class="form-label" for="@keyId">Property @number key</label>
+                        <input class="form-control" id="@keyId" @bind="row.Key" @bind:event="oninput" />
+                    </div>
+                    <div>
+                        <label class="form-label" for="@valueId">Property @number value</label>
+                        <input class="form-control" id="@valueId" @bind="row.Value" @bind:event="oninput" />
+                    </div>
+                    <button type="button" class="btn btn-outline-secondary" aria-label="Remove property @number" @onclick="() => RemoveProperty(row)">Remove</button>
+                </div>
+            }
+            <button type="button" id="add-property" class="btn btn-outline-secondary" @onclick="AddProperty">Add property</button>
+        </fieldset>
+    </details>
+    <div id="advanced-errors" class="text-danger-emphasis" role="alert" aria-atomic="true">
+        @if (metadataErrors.Count > 0)
+        {
+            <p class="mb-1">Check the Advanced settings before sending:</p>
+            <ul>
+                @foreach (var error in metadataErrors)
+                {
+                    <li>@error</li>
+                }
+            </ul>
+        }
+    </div>
+
     <button type="submit" class="btn btn-primary" disabled="@Busy">
         @if (isSending)
         {
@@ -214,6 +271,7 @@
                             <dt>Received (local time)</dt>
                             <dd class="mb-0"><time datetime="@receivedAt.ToString("O")">@receivedAt.ToString("G") (UTC@(receivedAt.ToString("zzz")))</time></dd>
                         </dl>
+                        <MessageMetadata Subject="@delivery.Subject" CorrelationId="@delivery.CorrelationId" ApplicationProperties="delivery.ApplicationProperties" />
                     </article>
                 }
             </section>
@@ -234,6 +292,7 @@
                     <th>Topic</th>
                     <th>Message ID</th>
                     <th>Message</th>
+                    <th>Metadata</th>
                     <th>Consumers</th>
                 </tr>
             </thead>
@@ -248,7 +307,10 @@
                         <td>@(sent.Pattern == MessagingPattern.PubSub ? "Pub/sub" : "Competing consumers")</td>
                         <td><code>@sent.Topic</code></td>
                         <td><code>@sent.MessageId</code></td>
-                        <td>@sent.Message</td>
+                        <td>@sent.Request.Message</td>
+                        <td class="sent-metadata">
+                            <MessageMetadata Subject="@sent.Request.Subject" CorrelationId="@sent.Request.CorrelationId" ApplicationProperties="sent.Request.ApplicationProperties" />
+                        </td>
                         <td>@(recipientLabels.Length > 0 ? recipientLabels : "None reported")</td>
                     </tr>
                 }
@@ -397,20 +459,24 @@
             return;
         }
 
-        isSending = true;
         statusMessage = null;
+        var request = SnapshotRequest(model.Message!.Trim());
+        if (request is null)
+        {
+            return;
+        }
 
+        isSending = true;
         try
         {
-            var message = model.Message!.Trim();
             var pattern = model.Pattern;
-            var result = await ProducerApi.SendMessageAsync(message, pattern, pageLifetime.Token);
+            var result = await ProducerApi.SendMessageAsync(request, pattern, pageLifetime.Token);
             if (disposed)
             {
                 return;
             }
 
-            sentMessages.Insert(0, new SentMessage(result.MessageId, pattern, result.Topic, message, DateTimeOffset.UtcNow));
+            sentMessages.Insert(0, new SentMessage(result.MessageId, pattern, result.Topic, request, DateTimeOffset.UtcNow));
             statusMessage = $"Message {result.MessageId} published to '{result.Topic}'.";
             isError = false;
         }
@@ -440,5 +506,5 @@
 
     private sealed record DeliveryCard(long Sequence, DeliveryEvent Delivery);
     private sealed record CardInteraction(DeliveryCard Card, long Order);
-    private sealed record SentMessage(string MessageId, MessagingPattern Pattern, string Topic, string Message, DateTimeOffset SentAt);
+    private sealed record SentMessage(string MessageId, MessagingPattern Pattern, string Topic, SendMessageRequest Request, DateTimeOffset SentAt);
 }

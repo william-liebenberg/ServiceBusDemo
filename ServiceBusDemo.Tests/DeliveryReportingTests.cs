@@ -46,6 +46,10 @@ public class DeliveryReportingTests
             Assert.Equal(consumerName, request.Delivery.Consumer);
             Assert.Equal("order £42", request.Delivery.Body);
             Assert.Equal(4, request.Delivery.DeliveryCount);
+            Assert.Equal("Broker subject", request.Delivery.Subject);
+            Assert.Equal("order-42", request.Delivery.CorrelationId);
+            Assert.Equal("High", request.Delivery.ApplicationProperties!["Priority"]);
+            Assert.Equal("2.5", request.Delivery.ApplicationProperties["Weight"]);
             Assert.InRange(request.Delivery.ReceivedAt, before, DateTimeOffset.UtcNow);
         });
         Assert.Equal(("CompetingConsumers", "business-events", "business-events", "business-events"), Routing(requests[0].Delivery));
@@ -159,7 +163,9 @@ public class DeliveryReportingTests
         "business-events", "body", 1, DateTimeOffset.UtcNow);
 
     private static ServiceBusReceivedMessage NewMessage(string id) =>
-        ServiceBusModelFactory.ServiceBusReceivedMessage(body: BinaryData.FromString("order £42"), messageId: id, deliveryCount: 4);
+        ServiceBusModelFactory.ServiceBusReceivedMessage(body: BinaryData.FromString("order £42"), messageId: id,
+            deliveryCount: 4, subject: "Broker subject", correlationId: "order-42",
+            properties: new Dictionary<string, object> { ["Priority"] = "High", ["Weight"] = 2.5 });
 
     private static IHost CreateHost(RecordingHandler handler, WarningLog logs, Action<HttpClient>? configure = null)
     {
