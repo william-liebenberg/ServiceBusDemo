@@ -19,7 +19,7 @@ namespace ServiceBusDemo.Tests;
 public class WebTests
 {
     [Fact]
-    public async Task ConsumersReportBothPatternsAndKeepProcessingWhenWebStops()
+    public async Task ConsumersReportAllPatternsAndKeepProcessingWhenWebStops()
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         timeout.CancelAfter(TimeSpan.FromMinutes(3));
@@ -98,6 +98,7 @@ public class WebTests
         await WaitForReportsAsync(reports, competing, 1, token);
         await WaitForReportsAsync(reports, broadcast, 2, token);
 
+        await VerifyRoutingAsync(producer, reports, token);
         await VerifyBurstsAsync(producer, observedFeed, token);
         var discovery = new Dictionary<string, string?>();
         foreach (var (key, value) in await webDiscovery.Task.WaitAsync(token))
@@ -139,6 +140,46 @@ public class WebTests
         Assert.All(fanoutReports, report => Assert.Equal(HttpStatusCode.Accepted, report.Status));
         AssertFanout(fanoutReports.Select(report => report.Delivery));
         Assert.All(reports, report => Assert.Equal(1, report.Delivery.DeliveryCount));
+    }
+
+    private static async Task VerifyRoutingAsync(HttpClient producer,
+        ConcurrentQueue<(DeliveryEvent Delivery, HttpStatusCode Status)> reports, CancellationToken token)
+    {
+        const string body = "Routed order";
+        (string? Priority, string? Region, string[] Expected)[] cases =
+        [
+            ("High", null, ["all", "high-priority"]),
+            (null, "EU", ["all", "eu-orders"]),
+            ("High", "EU", ["all", "eu-orders", "high-priority"]),
+            ("Normal", "US", ["all"]),
+            (null, null, ["all"])
+        ];
+        var sends = new List<(string Id, string[] Expected)>();
+        var api = new ProducerApiClient(producer);
+        foreach (var (priority, region, expected) in cases)
+        {
+            var result = await api.SendMessageAsync(body, MessagingPattern.TopicFilters, token, priority, region);
+            Assert.Equal("routed-events", result.Topic);
+            sends.Add((result.MessageId, expected));
+        }
+        foreach (var (id, expected) in sends)
+        {
+            await WaitForReportsAsync(reports, id, expected.Length, token);
+        }
+
+        // Also allow incorrectly matching subscriptions time to report before checking the exact sets.
+        await Task.Delay(TimeSpan.FromSeconds(2), token);
+        foreach (var (id, expected) in sends)
+        {
+            var copies = reports.Where(report => report.Delivery.MessageId == id).ToArray();
+            Assert.Equal(expected, copies.Select(copy => copy.Delivery.Subscription).Order(StringComparer.Ordinal));
+            Assert.All(copies, copy =>
+            {
+                Assert.Equal(HttpStatusCode.Accepted, copy.Status);
+                Assert.Equal(("TopicFilters", "routed-events", body), (copy.Delivery.Pattern, copy.Delivery.Topic, copy.Delivery.Body));
+                Assert.Equal(copy.Delivery.Subscription == "eu-orders" ? "ConsumerTwo" : "ConsumerOne", copy.Delivery.Consumer);
+            });
+        }
     }
 
     private static async Task VerifyConsumerControlAsync(HttpClient producer, ConsumerOneControlClient one,

@@ -53,8 +53,42 @@
                     Each message is handled by <em>every</em> consumer.
                 </label>
             </div>
+            <div class="form-check">
+                <InputRadio id="pattern-topic-filters" class="form-check-input" Value="MessagingPattern.TopicFilters" />
+                <label class="form-check-label" for="pattern-topic-filters">
+                    <strong>Topic filters</strong> &ndash; <code>routed-events</code> topic, with rules evaluated independently by the broker.
+                </label>
+            </div>
         </InputRadioGroup>
     </fieldset>
+
+    @if (IsTopicFilters)
+    {
+        <fieldset class="mb-3" disabled="@Busy">
+            <legend class="form-label fs-6">Routing properties</legend>
+            <div class="row g-2 mb-3">
+                <div class="col-sm">
+                    <label for="route-priority" class="form-label">Priority (optional)</label>
+                    <InputText id="route-priority" class="form-control" @bind-Value="model.Priority" placeholder="High" />
+                </div>
+                <div class="col-sm">
+                    <label for="route-region" class="form-label">Region (optional)</label>
+                    <InputText id="route-region" class="form-control" @bind-Value="model.Region" placeholder="EU" />
+                </div>
+            </div>
+        </fieldset>
+        <div class="table-responsive">
+            <table id="routing-rules" class="table table-sm caption-top">
+                <caption>Routed subscription rules</caption>
+                <thead><tr><th scope="col">Subscription</th><th scope="col">Rule</th><th scope="col">Consumer</th></tr></thead>
+                <tbody>
+                    <tr><th scope="row"><code>high-priority</code></th><td><code>Priority = 'High'</code></td><td>Consumer One</td></tr>
+                    <tr><th scope="row"><code>eu-orders</code></th><td><code>Region = 'EU'</code></td><td>Consumer Two</td></tr>
+                    <tr><th scope="row"><code>all</code></th><td>Unfiltered (all messages)</td><td>Consumer One</td></tr>
+                </tbody>
+            </table>
+        </div>
+    }
 
     <div class="mb-3">
         <label for="message" class="form-label">Message</label>
@@ -81,7 +115,11 @@
 <form id="burst-form" @formname="send-burst" @onsubmit="SendBurstAsync" @onsubmit:preventDefault>
     <fieldset class="burst-controls mt-3">
         <legend class="h5">Burst sender</legend>
-        <fieldset class="burst-inputs" disabled="@Busy" aria-label="Burst settings">
+        @if (IsTopicFilters)
+        {
+            <p id="burst-unavailable" class="text-body-secondary">Burst sending is unavailable for Topic filters. Send one message at a time.</p>
+        }
+        <fieldset class="burst-inputs" disabled="@(Busy || IsTopicFilters)" aria-label="Burst settings">
             <div>
                 <label for="burst-count" class="form-label">Count (1–500)</label>
                 <input id="burst-count" class="form-control" inputmode="numeric" @bind="burstCount" @bind:event="oninput"
@@ -104,7 +142,8 @@
         </fieldset>
         @* Keep this node mounted and focusable through cancellation and completion. *@
         <button id="@(burstDelay is null ? "send-burst" : "cancel-burst")" type="@(burstDelay is null ? "submit" : "button")"
-                class="btn @(burstDelay is null ? "btn-primary" : "btn-outline-secondary")" disabled="@isSending"
+                class="btn @(burstDelay is null ? "btn-primary" : "btn-outline-secondary")" disabled="@(isSending || (IsTopicFilters && burstDelay is null))"
+                aria-describedby="@(IsTopicFilters ? "burst-unavailable" : null)"
                 aria-disabled="@(cancelPending ? "true" : null)" @onclick="CancelBurst" @ref="burstAction">
             @(burstDelay is null ? "Send burst" : "Cancel burst")
         </button>
@@ -194,6 +233,7 @@
                     {
                         nameof(MessagingPattern.CompetingConsumers) => "pattern-competing",
                         nameof(MessagingPattern.PubSub) => "pattern-pubsub",
+                        nameof(MessagingPattern.TopicFilters) => "pattern-topic-filters",
                         _ => ""
                     };
                     <article @key="card.Sequence" class="delivery-card @patternClass @(isHighlighted ? "delivery-highlighted" : "")"
@@ -223,8 +263,9 @@
 
 @if (sentMessages.Count > 0)
 {
+    var hasRoutedMessages = sentMessages.Any(sent => sent.Pattern == MessagingPattern.TopicFilters);
     <h2 id="sent-heading" class="h5 mt-4">Sent this session</h2>
-    <p id="sent-consumers-note" class="text-body-secondary">Consumers reflect retained reports only and may be incomplete.</p>
+    <p id="sent-consumers-note" class="text-body-secondary">Only retained delivery reports are shown. A missing report does not prove non-delivery.</p>
     <div class="table-responsive" role="region" tabindex="0" aria-labelledby="sent-heading" aria-describedby="sent-consumers-note">
         <table class="table table-sm">
             <thead>
@@ -235,6 +276,10 @@
                     <th>Message ID</th>
                     <th>Message</th>
                     <th>Consumers</th>
+                    @if (hasRoutedMessages)
+                    {
+                        <th>Reported subscriptions</th>
+                    }
                 </tr>
             </thead>
             <tbody>
@@ -245,11 +290,26 @@
                         .Select(consumer => consumer.Label));
                     <tr>
                         <td>@sent.SentAt.ToLocalTime().ToString("T")</td>
-                        <td>@(sent.Pattern == MessagingPattern.PubSub ? "Pub/sub" : "Competing consumers")</td>
+                        <td>@(sent.Pattern == MessagingPattern.PubSub ? "Pub/sub" : PatternLabel(sent.Pattern.ToString()))</td>
                         <td><code>@sent.Topic</code></td>
                         <td><code>@sent.MessageId</code></td>
                         <td>@sent.Message</td>
                         <td>@(recipientLabels.Length > 0 ? recipientLabels : "None reported")</td>
+                        @if (hasRoutedMessages)
+                        {
+                            var subscriptions = sent.Pattern == MessagingPattern.TopicFilters
+                                ? string.Join(", ", reportedCards
+                                    .Where(card => card.Delivery.Pattern == nameof(MessagingPattern.TopicFilters) && card.Delivery.Topic == sent.Topic)
+                                    .Select(card => card.Delivery.Subscription)
+                                    .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal))
+                                : null;
+                            <td class="reported-subscriptions">@(subscriptions switch
+                                {
+                                    null => "—",
+                                    "" => "None reported",
+                                    _ => subscriptions
+                                })</td>
+                        }
                     </tr>
                 }
             </tbody>
@@ -276,6 +336,7 @@
     private bool isSending;
     private bool isError;
     private string? statusMessage;
+    private bool IsTopicFilters => model.Pattern == MessagingPattern.TopicFilters;
 
     protected override void OnInitialized()
     {
@@ -387,6 +448,7 @@
     {
         nameof(MessagingPattern.CompetingConsumers) => "Competing consumers",
         nameof(MessagingPattern.PubSub) => "Publish/subscribe",
+        nameof(MessagingPattern.TopicFilters) => "Topic filters",
         _ => pattern
     };
 
@@ -404,7 +466,8 @@
         {
             var message = model.Message!.Trim();
             var pattern = model.Pattern;
-            var result = await ProducerApi.SendMessageAsync(message, pattern, pageLifetime.Token);
+            var result = await ProducerApi.SendMessageAsync(message, pattern, pageLifetime.Token,
+                priority: model.Priority, region: model.Region);
             if (disposed)
             {
                 return;
@@ -435,6 +498,8 @@
         [System.ComponentModel.DataAnnotations.StringLength(4096)]
         public string? Message { get; set; }
 
+        public string? Priority { get; set; }
+        public string? Region { get; set; }
         public MessagingPattern Pattern { get; set; } = MessagingPattern.CompetingConsumers;
     }
 

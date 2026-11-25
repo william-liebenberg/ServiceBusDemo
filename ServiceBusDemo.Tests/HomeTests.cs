@@ -44,7 +44,7 @@ public class HomeTests
         Assert.Equal(new[] { TrimmedMessage, TrimmedMessage }, home.FindAll("tbody td:nth-child(5)").Select(cell => cell.TextContent));
         Assert.All(home.FindAll("tbody td:last-child"), cell => Assert.Equal("None reported", cell.TextContent));
         Assert.Single(home.FindAll(".table-responsive[tabindex='0'][aria-describedby=sent-consumers-note] table"));
-        Assert.Contains("retained reports only and may be incomplete", home.Find("#sent-consumers-note").TextContent);
+        Assert.Contains("Only retained delivery reports are shown", home.Find("#sent-consumers-note").TextContent);
     }
 
     [Fact]

@@ -1,17 +1,24 @@
+using System.Text.Json.Serialization;
+
 namespace ServiceBusDemo.Web;
 
 public class ProducerApiClient(HttpClient httpClient)
 {
-    public async Task<SendMessageResult> SendMessageAsync(string message, MessagingPattern pattern, CancellationToken cancellationToken = default)
+    public async Task<SendMessageResult> SendMessageAsync(string message, MessagingPattern pattern,
+        CancellationToken cancellationToken = default, string? priority = null, string? region = null)
     {
         var endpoint = pattern switch
         {
             MessagingPattern.CompetingConsumers => "/sendMessage",
             MessagingPattern.PubSub => "/broadcastMessage",
+            MessagingPattern.TopicFilters => "/routedMessage",
             _ => throw new ArgumentOutOfRangeException(nameof(pattern), pattern, null)
         };
 
-        using var response = await httpClient.PostAsJsonAsync(endpoint, new SendMessageRequest(message), cancellationToken);
+        using var response = pattern == MessagingPattern.TopicFilters
+            ? await httpClient.PostAsJsonAsync(endpoint, new RoutedMessageRequest(message,
+                string.IsNullOrEmpty(priority) ? null : priority, string.IsNullOrEmpty(region) ? null : region), cancellationToken)
+            : await httpClient.PostAsJsonAsync(endpoint, new SendMessageRequest(message), cancellationToken);
 
         if (!response.IsSuccessStatusCode)
         {
@@ -25,12 +32,17 @@ public class ProducerApiClient(HttpClient httpClient)
         return await response.Content.ReadFromJsonAsync<SendMessageResult>(cancellationToken)
             ?? throw new InvalidOperationException("Producer API returned an empty response.");
     }
+
+    private sealed record RoutedMessageRequest(string Message,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Priority,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Region);
 }
 
 public enum MessagingPattern
 {
     CompetingConsumers,
-    PubSub
+    PubSub,
+    TopicFilters
 }
 
 public record SendMessageRequest(string Message);

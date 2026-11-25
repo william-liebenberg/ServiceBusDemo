@@ -22,6 +22,7 @@ public class DeliveryEndpointTests
     [InlineData("CompetingConsumers", "Order placed", "application/json")]
     [InlineData("PubSub", "", "application/json; charset=utf-8")]
     [InlineData("PubSub", "Order placed", "application/json; charset=\"UTF-8\"")]
+    [InlineData("TopicFilters", "Order placed", "application/json")]
     public async Task ValidDeliveryIsAcceptedAndAddedToSingletonFeed(string pattern, string body, string contentType)
     {
         await using var factory = new WebApplicationFactory<DeliveryFeed>();

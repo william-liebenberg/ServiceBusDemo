@@ -103,13 +103,13 @@ public partial class Home
 
     private async Task SendBurstAsync()
     {
-        if (disposed || Busy)
+        if (disposed || Busy || IsTopicFilters)
         {
             return;
         }
 
         var messageValid = await messageContext.ValidateAsync();
-        if (disposed || Busy)
+        if (disposed || Busy || IsTopicFilters)
         {
             return;
         }

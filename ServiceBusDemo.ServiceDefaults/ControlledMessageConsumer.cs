@@ -18,17 +18,19 @@ public abstract class ControlledMessageConsumer : BackgroundService
     private volatile bool _stopping;
 
     protected ControlledMessageConsumer(ServiceBusClient client, IConfiguration configuration, ILogger logger,
-        DeliveryReportQueue reports, string consumerName, string broadcastSubscription)
+        DeliveryReportQueue reports, string consumerName, string broadcastSubscription, params string[] routedSubscriptions)
     {
         _client = client;
         _logger = logger;
         _reports = reports;
+        var routedTopic = configuration["ServiceBus:RoutedTopicName"] ?? "routed-events";
         _processors =
         [
             new("CompetingConsumers", configuration["ServiceBus:TopicName"] ?? "business-events",
                 configuration["ServiceBus:SubscriptionName"] ?? "business-events"),
             new("PubSub", configuration["ServiceBus:BroadcastTopicName"] ?? "broadcast-events",
-                configuration["ServiceBus:BroadcastSubscriptionName"] ?? broadcastSubscription)
+                configuration["ServiceBus:BroadcastSubscriptionName"] ?? broadcastSubscription),
+            .. routedSubscriptions.Select(subscription => new ProcessorSlot("TopicFilters", routedTopic, subscription))
         ];
         _status = new(consumerName, ConsumerState.Initializing, SnapshotSubscriptions());
     }

@@ -71,6 +71,14 @@
     --pattern-color: #008272;
 }
 
+.pattern-topic-filters {
+    --pattern-color: #0b5cab;
+}
+
+.reported-subscriptions {
+    overflow-wrap: anywhere;
+}
+
 .delivery-pattern {
     display: inline-block;
     padding: 0.15rem 0.5rem;

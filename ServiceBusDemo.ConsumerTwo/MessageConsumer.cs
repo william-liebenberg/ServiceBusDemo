@@ -8,4 +8,5 @@ public sealed class MessageConsumer(
     IConfiguration configuration,
     ILogger<MessageConsumer> logger,
     DeliveryReportQueue reports)
-    : ControlledMessageConsumer(client, configuration, logger, reports, "ConsumerTwo", "consumer-two");
+    : ControlledMessageConsumer(client, configuration, logger, reports, "ConsumerTwo", "consumer-two",
+        configuration["ServiceBus:EuOrdersSubscriptionName"] ?? "eu-orders");

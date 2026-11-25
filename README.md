@@ -3,7 +3,7 @@
 <p align="center">
   <strong>A small, runnable .NET Aspire app for seeing what Azure Service Bus topics actually do.</strong>
   <br />
-  Compare <em>competing consumers</em> with <em>publish/subscribe</em>, send messages from a web UI, and follow each delivery in the Aspire dashboard — no Azure subscription required for the local demo.
+  Compare <em>competing consumers</em>, <em>publish/subscribe</em>, and <em>topic filters</em>, send messages from a web UI, and follow deliveries — no Azure subscription required for the local demo.
 </p>
 
 <p align="center">
@@ -17,6 +17,7 @@
 - How a **topic** fans messages out to its **subscriptions**.
 - Why consumers sharing one subscription compete for each message.
 - How independent subscriptions give each consumer its own copy.
+- How broker-side subscription rules route messages based on application properties.
 - How to publish with `ServiceBusSender` and receive with `ServiceBusProcessor`.
 - How .NET Aspire wires the producer, consumers, and local Service Bus emulator together.
 
@@ -28,6 +29,7 @@ flowchart LR
     UI -->|HTTP| API[Producer API]
     API -->|sendMessage| SharedTopic[(business-events)]
     API -->|broadcastMessage| FanoutTopic[(broadcast-events)]
+    API -->|routedMessage| RoutedTopic[(routed-events)]
 
     SharedTopic --> SharedSub[[business-events subscription]]
     SharedSub -. "one delivery per message" .-> C1[Consumer One]
@@ -37,16 +39,22 @@ flowchart LR
     FanoutTopic --> SubTwo[[consumer-two subscription]]
     SubOne --> C1
     SubTwo --> C2
+    RoutedTopic --> HighSub[[high-priority]]
+    RoutedTopic --> EuSub[[eu-orders]]
+    RoutedTopic --> AllSub[[all]]
+    HighSub --> C1
+    AllSub --> C1
+    EuSub --> C2
 
     classDef app fill:#0b5cab,color:#fff,stroke:#073b73,stroke-width:2px;
     classDef topic fill:#6f42c1,color:#fff,stroke:#4c2889,stroke-width:2px;
     classDef subscription fill:#008272,color:#fff,stroke:#005a50,stroke-width:2px;
     class UI,API,C1,C2 app;
-    class SharedTopic,FanoutTopic topic;
-    class SharedSub,SubOne,SubTwo subscription;
+    class SharedTopic,FanoutTopic,RoutedTopic topic;
+    class SharedSub,SubOne,SubTwo,HighSub,EuSub,AllSub subscription;
 ```
 
-The Web UI calls the Producer API. The API publishes to one of two topics; each topic's subscription topology determines which consumer receives the message. Aspire creates the local resources and supplies connection configuration to the services.
+The Web UI calls the Producer API. The API publishes to one of three topics; each topic's subscriptions determine which consumers receive the message. Aspire creates the local resources and supplies connection configuration to the services.
 
 ## Pattern 1: Competing consumers
 
@@ -149,6 +157,22 @@ await processor.StartProcessingAsync(stoppingToken);
 
 **Good fit:** independent downstream systems that each need the event, such as notifications, analytics, and auditing.
 
+## Pattern 3: Topic filters
+
+The broker evaluates each subscription independently on `routed-events`:
+
+| Subscription | Rule | Consumer |
+| --- | --- | --- |
+| `high-priority` | `Priority = 'High'` | Consumer One |
+| `eu-orders` | `Region = 'EU'` | Consumer Two |
+| `all` | Unfiltered | Consumer One |
+
+AppHost uses Aspire 13.6.5's subscription `Rules` API to declare one correlation rule per filtered subscription. Aspire serializes the rules into the emulator's startup configuration. Each filtered subscription starts with its configured rule only, not a default match-all rule. `all` has no custom rules and receives every message. The producer waits for the routed subscriptions; no separate setup command or consumer-side filtering is needed.
+
+In the UI, select **Topic filters** and enter a message and optional **Priority** and **Region** values. Try `High` alone, `EU` alone, both together, and neither. Both matching values route to all three subscriptions; neither (including nonmatching values) routes only to `all`. Consumer One can show two cards with the same message ID because it owns two distinct routed subscriptions.
+
+The sent history lists reported subscriptions by message ID, using only retained events. Clearing the feed or its capacity limit can remove these reports without changing sent history. Missing reports do not prove non-delivery. **Topic filters** sends one message at a time; the burst sender is disabled for this pattern.
+
 ## Run it locally
 
 ### Prerequisites
@@ -164,16 +188,17 @@ From the repository root:
 dotnet run --project ServiceBusDemo.AppHost
 ```
 
-Aspire starts the emulator, creates both topics and their subscriptions, and launches the web UI, producer, and two consumers. Open the **webfrontend** endpoint shown in the Aspire dashboard, choose a pattern, enter a message, and select **Send**. The dashboard is also where you can inspect resource health and the consumer logs.
+Aspire starts the emulator with all three topics and their subscriptions, and launches the web UI, producer, and two consumers. Open the **webfrontend** endpoint shown in the Aspire dashboard, choose a pattern, enter a message, and select **Send**. The dashboard is also where you can inspect resource health and the consumer logs.
 
 To observe the difference, send one message with each pattern and look at the consumer logs:
 
 - **Competing consumers:** find `[CompetingConsumers]`; only one of the two consumers handles a given message in the normal case.
 - **Publish/subscribe:** find `[PubSub]`; both consumers log the same message ID, each from its own subscription.
+- **Topic filters:** find `[TopicFilters]`; the same message ID appears once for each matching subscription.
 
 ### Try a burst
 
-Choose a pattern and enter a message. Set **Count** (1–500, default 10), leave **Limit rate** unchecked to go as fast as possible, or enable it and enter a whole-number rate (1–1000 messages per second). Select **Send burst** and watch the acknowledged-send progress and the two consumer bars. Try each pattern: with all reports arriving once, the competing-consumer bars sum to the acknowledged send count, while each pub/sub bar reaches that count.
+Choose **Competing consumers** or **Publish/subscribe** and enter a message. Set **Count** (1–500, default 10), leave **Limit rate** unchecked to go as fast as possible, or enable it and enter a whole-number rate (1–1000 messages per second). Select **Send burst** and watch the acknowledged-send progress and the two consumer bars. With all reports arriving once, the competing-consumer bars sum to the acknowledged send count, while each pub/sub bar reaches that count.
 
 The Web UI loops sequentially over the existing producer routes rather than using a batch API. This keeps the per-message acknowledgements and lets the UI pace request starts and cancel between requests. A fixed rate is a cap, not a throughput guarantee. **Cancel burst** interrupts any pacing delay and stops new requests; it lets an already-started request finish and counts its acknowledgement if it succeeds. A failed request stops the burst without retrying: the producer may have accepted it even if the UI didn't receive confirmation.
 
@@ -183,7 +208,7 @@ The bars count **reported deliveries**, not broker backlog. They follow acknowle
 
 ### Pause and resume consumers
 
-Each delivery lane has **Pause** and **Resume** buttons that control both subscriptions for that consumer without stopping its process. Pause waits for in-flight processing to finish. Resume starts the same processors again. The badges refresh automatically, including after changes from another tab. A consumer process restart starts both processors normally; pause is not persisted. **Mixed** means the two processors are in different states; retry Pause or Resume to bring them back to the same state.
+Each delivery lane has **Pause** and **Resume** buttons that control all processors for that consumer without stopping its process. Pause waits for in-flight processing to finish. Resume starts the same processors again. The badges refresh automatically, including after changes from another tab. A consumer process restart starts all its processors normally; pause is not persisted. **Mixed** means processors are in different states; retry Pause or Resume to bring them back to the same state.
 
 1. Pause **Consumer Two** and wait for **Paused**. Send a competing-consumer message or burst. The new deliveries should appear in Consumer One's lane.
 2. Pause **Consumer One** too. Send more competing-consumer messages and note their message IDs. Resume Consumer One and watch for those IDs in its lane as it processes the backlog.
@@ -203,7 +228,7 @@ dotnet test ServiceBusDemo.slnx
 
 ## Try the producer API directly
 
-The Producer API has two POST routes. Use the producer endpoint URL shown in the Aspire dashboard in place of `<producer-url>`:
+The Producer API has three POST routes. Use the producer endpoint URL shown in the Aspire dashboard in place of `<producer-url>`:
 
 ```bash
 curl -X POST "<producer-url>/sendMessage" \
@@ -213,8 +238,25 @@ curl -X POST "<producer-url>/sendMessage" \
 curl -X POST "<producer-url>/broadcastMessage" \
   -H "Content-Type: application/json" \
   -d '{"message":"Order 42 was placed"}'
+
+curl -X POST "<producer-url>/routedMessage" \
+  -H "Content-Type: application/json" \
+  -d '{"message":"Priority order","priority":"High"}'
+
+curl -X POST "<producer-url>/routedMessage" \
+  -H "Content-Type: application/json" \
+  -d '{"message":"EU order","region":"EU"}'
+
+curl -X POST "<producer-url>/routedMessage" \
+  -H "Content-Type: application/json" \
+  -d '{"message":"Priority EU order","priority":"High","region":"EU"}'
+
+curl -X POST "<producer-url>/routedMessage" \
+  -H "Content-Type: application/json" \
+  -d '{"message":"Standard order"}'
 ```
 
+A routed request maps nonempty string `priority` and `region` values to the broker application properties `Priority` and `Region` respectively.
 A successful request returns `202 Accepted` with the generated `messageId` and topic name. The API rejects an empty message with `400 Bad Request`.
 
 ## Delivery event ingest
@@ -229,10 +271,10 @@ The feed keeps the most recent 200 events in memory and loses them when the Web 
 | --- | --- |
 | [`ServiceBusDemo.AppHost`](ServiceBusDemo.AppHost/AppHost.cs) | Defines the emulator, topics, subscriptions, and service wiring. |
 | [`ServiceBusDemo.Web`](ServiceBusDemo.Web/Components/Pages/Home.razor) | Interactive UI for selecting a pattern and publishing a message. |
-| [`ServiceBusDemo.Producer`](ServiceBusDemo.Producer/Program.cs) | HTTP API and the two `ServiceBusSender` instances. |
-| [`ServiceBusDemo.ConsumerOne`](ServiceBusDemo.ConsumerOne/MessageConsumer.cs) | Background worker listening to both topologies. |
-| [`ServiceBusDemo.ConsumerTwo`](ServiceBusDemo.ConsumerTwo/MessageConsumer.cs) | Second worker; shares one subscription and has its own broadcast subscription. |
-| [`ServiceBusDemo.Tests`](ServiceBusDemo.Tests/WebTests.cs) | Aspire integration test for both messaging patterns and reporting during Web outages. |
+| [`ServiceBusDemo.Producer`](ServiceBusDemo.Producer/Program.cs) | HTTP API with a `ServiceBusSender` for each topic. |
+| [`ServiceBusDemo.ConsumerOne`](ServiceBusDemo.ConsumerOne/MessageConsumer.cs) | Worker listening to shared, broadcast, `high-priority`, and `all` subscriptions. |
+| [`ServiceBusDemo.ConsumerTwo`](ServiceBusDemo.ConsumerTwo/MessageConsumer.cs) | Worker listening to shared, broadcast, and `eu-orders` subscriptions. |
+| [`ServiceBusDemo.Tests`](ServiceBusDemo.Tests/WebTests.cs) | Aspire integration test for all patterns and reporting during Web outages. |
 
 ## A few Service Bus details worth keeping in mind
 
