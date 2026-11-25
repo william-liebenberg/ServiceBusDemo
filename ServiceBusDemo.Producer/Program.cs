@@ -1,11 +1,18 @@
 using System.Text.Json.Serialization;
 using Azure.Messaging.ServiceBus;
+using Microsoft.Extensions.Azure;
+using ServiceBusDemo.Producer;
 using ServiceBusDemo.ServiceDefaults;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.AddServiceDefaults();
-builder.AddAzureServiceBusClient(connectionName: "messaging");
+builder.AddAzureServiceBusClient("messaging", null, client => client.ConfigureOptions(options =>
+{
+    // An unacknowledged send or settlement must not be replayed automatically.
+    options.RetryOptions.MaxRetries = 0;
+}));
+builder.Services.AddSingleton<DeadLetterService>();
 
 var topicName = builder.Configuration["ServiceBus:TopicName"] ?? "business-events";
 var broadcastTopicName = builder.Configuration["ServiceBus:BroadcastTopicName"] ?? "broadcast-events";
@@ -43,6 +50,7 @@ app.MapPost("/routedMessage", (SendMessageRequest request, [FromKeyedServices(Se
     PublishAsync(request, sender, logger, cancellationToken, routed: true))
 .WithName("RoutedMessage");
 
+app.MapDeadLetters(topicName, broadcastTopicName, routedTopicName);
 app.MapDefaultEndpoints();
 
 app.Run();

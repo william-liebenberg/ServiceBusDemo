@@ -19,7 +19,7 @@ public class HomeDepthTests
             row => Assert.Equal(new[] { "business-events", "business-events" }, row.QuerySelectorAll("code").Select(code => code.TextContent)),
             row => Assert.Equal(new[] { "broadcast-events", "consumer-one" }, row.QuerySelectorAll("code").Select(code => code.TextContent)),
             row => Assert.Equal(new[] { "broadcast-events", "consumer-two" }, row.QuerySelectorAll("code").Select(code => code.TextContent)));
-        Assert.All(rows, row => Assert.Contains("Dead-letter: unavailable", row.TextContent));
+        Assert.All(rows, row => Assert.Contains("Dead-letter count: unavailable", row.TextContent));
         AssertDepth(home, 0, 0, 0);
     }
 

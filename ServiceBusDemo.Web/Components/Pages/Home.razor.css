@@ -1,3 +1,14 @@
+.dead-letter-card {
+    border: 1px solid var(--bs-border-color);
+    border-radius: 0.375rem;
+    padding: 0.75rem;
+    overflow-wrap: anywhere;
+}
+
+.dead-letter-body {
+    white-space: pre-wrap;
+}
+
 .burst-controls,
 .burst-results {
     border: 1px solid var(--bs-border-color);

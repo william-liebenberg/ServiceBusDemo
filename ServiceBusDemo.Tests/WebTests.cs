@@ -127,6 +127,7 @@ public class WebTests
         await using var bus = new ServiceBusClient(connectionString!);
         var resourceLogs = app.Services.GetRequiredService<ResourceLoggerService>();
         await VerifyFailureLabAsync(producer, bus, resourceLogs, runningConsumers, reports, token);
+        await VerifyDeadLetterRecoveryAsync(producer, reports, token);
 
         var commandService = app.Services.GetRequiredService<ResourceCommandService>();
         var stop = await commandService.ExecuteCommandAsync("webfrontend", "resource-stop", token);
@@ -154,6 +155,52 @@ public class WebTests
         var fanoutReports = reports.Where(report => report.Delivery.MessageId == broadcast).ToArray();
         Assert.All(fanoutReports, report => Assert.Equal(HttpStatusCode.Accepted, report.Status));
         AssertFanout(fanoutReports.Select(report => report.Delivery));
+    }
+
+    private static async Task VerifyDeadLetterRecoveryAsync(HttpClient producer,
+        ConcurrentQueue<(DeliveryEvent Delivery, HttpStatusCode Status)> reports, CancellationToken token)
+    {
+        var api = new ProducerApiClient(producer);
+        var pairs = await api.GetDeadLetterSubscriptionsAsync(token);
+        Assert.Equal(6, pairs.Length);
+        var pair = Assert.Single(pairs, pair => pair.Topic == "routed-events" && pair.Subscription == "high-priority");
+        var all = Assert.Single(pairs, pair => pair.Topic == "routed-events" && pair.Subscription == "all");
+        var ids = new List<string>();
+        for (var i = 0; i < 3; i++)
+        {
+            ids.Add(await PublishAsync(producer, "/routedMessage", token,
+                new($"Recover {i}", AlwaysFail: true, Priority: "High")));
+            await WaitForReportsAsync(reports, ids[i], 2 * FailureLab.AttemptLimit, token);
+        }
+
+        var page = await api.PeekDeadLettersAsync(pair, token: token);
+        var again = await api.PeekDeadLettersAsync(pair, token: token);
+        Assert.Equal(3, page.Messages.Length);
+        Assert.Equal(page.Messages.Select(m => (m.SequenceNumber, m.DeliveryCount)), again.Messages.Select(m => (m.SequenceNumber, m.DeliveryCount)));
+        var recover = Assert.Single(page.Messages, m => m.MessageId == ids[0]);
+        Assert.Equal(FailureLab.DeadLetterReason, recover.DeadLetterReason);
+        Assert.False(string.IsNullOrWhiteSpace(recover.DeadLetterErrorDescription));
+        Assert.Equal("Recover 0", recover.Body);
+        Assert.Equal("High", recover.ApplicationProperties["Priority"]);
+
+        var result = await api.ResubmitDeadLetterAsync(pair, recover.SequenceNumber, token);
+        Assert.NotNull(result.PublishedMessageId);
+        Assert.NotEqual(recover.MessageId, result.PublishedMessageId);
+        await WaitForReportsAsync(reports, result.PublishedMessageId, 2, token);
+        Assert.Equal(new[] { "all", "high-priority" }, reports.Where(item => item.Delivery.MessageId == result.PublishedMessageId)
+            .Select(item => item.Delivery.Subscription).Order(StringComparer.Ordinal));
+        Assert.All(reports.Where(item => item.Delivery.MessageId == result.PublishedMessageId), item =>
+        {
+            Assert.Equal((1, DeliveryOutcomes.Completed), (item.Delivery.DeliveryCount, item.Delivery.Outcome));
+            Assert.False(item.Delivery.ApplicationProperties!.ContainsKey(FailureLab.AlwaysFailProperty));
+        });
+
+        var remaining = await api.PeekDeadLettersAsync(pair, token: token);
+        Assert.DoesNotContain(remaining.Messages, m => m.SequenceNumber == recover.SequenceNumber);
+        var purge = Assert.Single(remaining.Messages, m => m.MessageId == ids[2]);
+        await api.PurgeDeadLetterAsync(pair, purge.SequenceNumber, token);
+        Assert.Equal(ids[1], Assert.Single((await api.PeekDeadLettersAsync(pair, token: token)).Messages).MessageId);
+        Assert.Equal(ids.Order(), (await api.PeekDeadLettersAsync(all, token: token)).Messages.Select(m => m.MessageId).Order());
     }
 
     private static async Task VerifyFailureLabAsync(HttpClient producer, ServiceBusClient bus, ResourceLoggerService resourceLogs,
