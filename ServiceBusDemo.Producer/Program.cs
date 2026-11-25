@@ -73,11 +73,20 @@ static async Task<IResult> PublishAsync(SendMessageRequest request, ServiceBusSe
         return Results.BadRequest($"CorrelationId must be non-blank and at most {MessageMetadataRules.NameLimit} characters.");
     }
 
-    if (request.ApplicationProperties is { } properties && properties.Any(property =>
-            !MessageMetadataRules.IsValid(property.Key, MessageMetadataRules.NameLimit) ||
-            !MessageMetadataRules.IsValid(property.Value, MessageMetadataRules.ValueLimit)))
+    if (request.ApplicationProperties is { } properties)
     {
-        return Results.BadRequest($"Application property keys and values must be non-blank and at most {MessageMetadataRules.NameLimit} and {MessageMetadataRules.ValueLimit} characters, respectively.");
+        var reservedKey = properties.Keys.FirstOrDefault(FailureLab.IsReservedProperty);
+        if (reservedKey is not null)
+        {
+            return Results.BadRequest($"Application property '{reservedKey}' is reserved for Failure lab. Use the failFirstCount, alwaysFail, or delaySeconds request fields instead.");
+        }
+
+        if (properties.Any(property =>
+                !MessageMetadataRules.IsValid(property.Key, MessageMetadataRules.NameLimit) ||
+                !MessageMetadataRules.IsValid(property.Value, MessageMetadataRules.ValueLimit)))
+        {
+            return Results.BadRequest($"Application property keys and values must be non-blank and at most {MessageMetadataRules.NameLimit} and {MessageMetadataRules.ValueLimit} characters, respectively.");
+        }
     }
 
     var message = new ServiceBusMessage(request.Message)

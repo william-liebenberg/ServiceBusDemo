@@ -13,6 +13,7 @@ public class ProducerFailureTests
     [Theory]
     [InlineData("/sendMessage", "business-events")]
     [InlineData("/broadcastMessage", "broadcast-events")]
+    [InlineData("/routedMessage", "routed-events")]
     public async Task RoutesValidateAndMapFailureOptions(string route, string topic)
     {
         var token = TestContext.Current.CancellationToken;
@@ -24,21 +25,28 @@ public class ProducerFailureTests
             builder.UseSetting("ConnectionStrings:messaging", "Endpoint=sb://localhost/;SharedAccessKeyName=test;SharedAccessKey=dGVzdA==");
             builder.ConfigureServices(services =>
             {
-                services.AddKeyedSingleton<ServiceBusSender>("business-events", topic == "business-events" ? sender : other);
-                services.AddKeyedSingleton<ServiceBusSender>("broadcast-events", topic == "broadcast-events" ? sender : other);
+                foreach (var key in new[] { "business-events", "broadcast-events", "routed-events" })
+                {
+                    services.AddKeyedSingleton<ServiceBusSender>(key, topic == key ? sender : other);
+                }
             });
         });
         using var client = factory.CreateClient(new() { BaseAddress = new Uri("https://localhost") });
         using var normal = await client.PostAsJsonAsync(route, new { message = "Order" }, token);
         Assert.Equal(HttpStatusCode.Accepted, normal.StatusCode);
         Assert.Empty(Assert.Single(sender.Messages).ApplicationProperties);
-        using var configured = await client.PostAsJsonAsync(route, new { message = "Order", failFirstCount = 10, alwaysFail = true, delaySeconds = 120 }, token);
+        using var configured = await client.PostAsJsonAsync(route, new
+        {
+            message = "Order", failFirstCount = 10, alwaysFail = true, delaySeconds = 120,
+            applicationProperties = new Dictionary<string, string> { ["Tag"] = "example" }
+        }, token);
         Assert.Equal(HttpStatusCode.Accepted, configured.StatusCode);
         var properties = sender.Messages[1].ApplicationProperties;
-        Assert.Equal(3, properties.Count);
+        Assert.Equal(4, properties.Count);
         Assert.Equal(10, properties[FailureLab.FailFirstCountProperty]);
         Assert.Equal(true, properties[FailureLab.AlwaysFailProperty]);
         Assert.Equal(120, properties[FailureLab.DelaySecondsProperty]);
+        Assert.Equal("example", properties["Tag"]);
 
         foreach (var option in new[] { "\"failFirstCount\":0", "\"failFirstCount\":11", "\"failFirstCount\":1.5", "\"failFirstCount\":\"2\"",
                      "\"delaySeconds\":0", "\"delaySeconds\":121", "\"delaySeconds\":1.5", "\"alwaysFail\":\"true\"" })
@@ -46,6 +54,23 @@ public class ProducerFailureTests
             using var content = new StringContent($$"""{"message":"Order",{{option}}}""", Encoding.UTF8, "application/json");
             using var rejected = await client.PostAsync(route, content, token);
             Assert.Equal(HttpStatusCode.BadRequest, rejected.StatusCode);
+        }
+
+        foreach (var key in new[] { "fail-first-count", "always-fail", "delay-seconds", "FAIL-FIRST-COUNT" })
+        {
+            foreach (var enabled in new[] { false, true })
+            {
+                using var rejected = await client.PostAsJsonAsync(route, new
+                {
+                    message = "Order",
+                    failFirstCount = enabled ? 2 : (int?)null,
+                    alwaysFail = enabled,
+                    delaySeconds = enabled ? 5 : (int?)null,
+                    applicationProperties = new Dictionary<string, string> { [key] = "custom value" }
+                }, token);
+                Assert.Equal(HttpStatusCode.BadRequest, rejected.StatusCode);
+                Assert.Contains($"'{key}' is reserved for Failure lab", await rejected.Content.ReadAsStringAsync(token));
+            }
         }
         Assert.Equal(2, sender.Messages.Count);
         Assert.Empty(other.Messages);
@@ -55,7 +80,6 @@ public class ProducerFailureTests
     {
         public override string EntityPath => topic;
         public List<ServiceBusMessage> Messages { get; } = [];
-
         public override Task SendMessageAsync(ServiceBusMessage message, CancellationToken cancellationToken = default)
         {
             Messages.Add(message);

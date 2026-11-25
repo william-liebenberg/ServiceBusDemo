@@ -52,6 +52,55 @@ public class HomeFailureTests
         Assert.All(handler.Requests.Skip(1), request => Assert.Equal(new("Order", 3, false, 9, Subject: "Orders"), request));
     }
 
+    [Theory]
+    [InlineData("fail-first-count")]
+    [InlineData("always-fail")]
+    [InlineData("delay-seconds")]
+    [InlineData("FAIL-FIRST-COUNT")]
+    public async Task SingleAndBurstRejectReservedMetadataAndSendAfterCorrection(string key)
+    {
+        await using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        using var handler = new Handler();
+        using var client = new HttpClient(handler) { BaseAddress = new Uri("https://producer.test") };
+        context.Services.AddSingleton(new ProducerApiClient(client));
+        context.Services.AddControlTestClients();
+        context.Services.AddSingleton(new DeliveryFeed());
+        var home = context.Render<Home>();
+        home.Find("#message").Change("Order");
+        home.Find("#burst-count").Input("2");
+        home.Find("#add-property").Click();
+        home.Find("#property-key-1").Input(key);
+        home.Find("#property-value-1").Input("example");
+
+        await home.Find("form:first-of-type").SubmitAsync();
+        Assert.Empty(handler.Requests);
+        Assert.Contains($"{key} is reserved. Use the Failure lab controls instead.",
+            home.Find("details[open] #advanced-errors[role=alert]").TextContent);
+
+        foreach (var option in new[] { "fail-first", "always-fail", "slow-handler" })
+        {
+            home.Find($"#{option}").Change(true);
+        }
+        await home.Find("#burst-form").SubmitAsync();
+        Assert.Empty(handler.Requests);
+        Assert.Contains($"{key} is reserved. Use the Failure lab controls instead.", home.Find("#advanced-errors").TextContent);
+
+        home.Find("#property-key-1").Input("Tag");
+        Assert.Empty(home.FindAll("#advanced-errors li"));
+        await home.Find("form:first-of-type").SubmitAsync();
+        Assert.Single(handler.Requests);
+        await home.Find("#burst-form").SubmitAsync();
+        Assert.Equal(3, handler.Requests.Count);
+        Assert.All(handler.Requests, request =>
+        {
+            Assert.Equal(new KeyValuePair<string, string>("Tag", "example"), Assert.Single(request.ApplicationProperties!));
+            Assert.Equal(2, request.FailFirstCount);
+            Assert.True(request.AlwaysFail);
+            Assert.Equal(5, request.DelaySeconds);
+        });
+    }
+
     [Fact]
     public async Task EmptyFeedExplainsWhenCardsAppearAndWhyTheyMayBeMissing()
     {

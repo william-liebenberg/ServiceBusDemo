@@ -98,6 +98,10 @@ public partial class Home
             {
                 metadataErrors.Add($"Property {i + 1} key must be non-blank and at most {MessageMetadataRules.NameLimit} characters.");
             }
+            else if (FailureLab.IsReservedProperty(row.Key))
+            {
+                metadataErrors.Add($"Property {i + 1}: {row.Key} is reserved. Use the Failure lab controls instead.");
+            }
             else if (IsTopicFilters && row.Key is "Priority" or "Region")
             {
                 metadataErrors.Add($"Property {i + 1}: set {row.Key} in Routing properties instead of using it as a custom key.");
