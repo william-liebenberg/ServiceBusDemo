@@ -37,7 +37,7 @@
     <DataAnnotationsValidator />
     <fieldset class="mb-3" disabled="@Busy">
         <legend class="form-label fs-6">Pattern</legend>
-        <InputRadioGroup @bind-Value="model.Pattern">
+        <InputRadioGroup @bind-Value="model.Pattern" @bind-Value:after="RevalidateMetadata">
             <div class="form-check">
                 <InputRadio id="pattern-competing" class="form-check-input" Value="MessagingPattern.CompetingConsumers" />
                 <label class="form-check-label" for="pattern-competing">
@@ -113,25 +113,35 @@
             }
         </div>
         <fieldset class="my-2" disabled="@Busy" aria-labelledby="advanced-heading" aria-describedby="advanced-errors">
-            <p class="text-body-secondary">Optional metadata for single sends and bursts.</p>
+            @if (IsTopicFilters)
+            {
+                <p class="text-body-secondary">Optional subject and custom metadata. Set <code>Priority</code> and <code>Region</code> only in Routing properties; the rules use those exact names.</p>
+            }
+            else
+            {
+                <p class="text-body-secondary">Optional metadata for single sends and bursts.</p>
+            }
             <div class="metadata-fields mb-2">
                 <div>
                     <label class="form-label" for="advanced-subject">Subject</label>
                     <input class="form-control" id="advanced-subject" @bind="subject" @bind:event="oninput" @bind:after="RevalidateMetadata" />
                 </div>
-                <div>
-                    <label class="form-label" for="advanced-priority">Priority</label>
-                    <select class="form-select" id="advanced-priority" @bind="priority" @bind:after="RevalidateMetadata">
-                        <option value="">Not set</option>
-                        <option>Low</option>
-                        <option>Normal</option>
-                        <option>High</option>
-                    </select>
-                </div>
-                <div>
-                    <label class="form-label" for="advanced-region">Region</label>
-                    <input class="form-control" id="advanced-region" @bind="region" @bind:event="oninput" @bind:after="RevalidateMetadata" />
-                </div>
+                @if (!IsTopicFilters)
+                {
+                    <div>
+                        <label class="form-label" for="advanced-priority">Priority</label>
+                        <select class="form-select" id="advanced-priority" @bind="priority" @bind:after="RevalidateMetadata">
+                            <option value="">Not set</option>
+                            <option>Low</option>
+                            <option>Normal</option>
+                            <option>High</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="form-label" for="advanced-region">Region</label>
+                        <input class="form-control" id="advanced-region" @bind="region" @bind:event="oninput" @bind:after="RevalidateMetadata" />
+                    </div>
+                }
             </div>
             @for (var i = 0; i < propertyRows.Count; i++)
             {
@@ -259,7 +269,8 @@
         }
     </ul>
     <p id="depth-note" class="text-body-secondary">
-        Estimates cover acknowledged sends in this page session only, not external sends. Delivery reports are best-effort,
+        Subscription depth is unavailable for Topic filters (<code>routed-events</code>).
+        Estimates above cover acknowledged sends in this page session only, not external sends. Delivery reports are best-effort,
         arrive before broker completion, and only the latest 200 are retained. Clearing the feed or reports aging out of it
         can increase the estimate. Reloading loses this page’s sent history.
     </p>
@@ -388,7 +399,7 @@
                                     <dl class="mb-0">
                                         <dt>Priority</dt>
                                         <dd class="mb-0">
-                                            @if ((sent.Request.Priority ?? sent.Request.ApplicationProperties?.GetValueOrDefault("Priority")) is { } priority)
+                                            @if (sent.Request.Priority is { } priority)
                                             {
                                                 <code>"@priority"</code>
                                             }
@@ -399,7 +410,7 @@
                                         </dd>
                                         <dt>Region</dt>
                                         <dd class="mb-0">
-                                            @if ((sent.Request.Region ?? sent.Request.ApplicationProperties?.GetValueOrDefault("Region")) is { } region)
+                                            @if (sent.Request.Region is { } region)
                                             {
                                                 <code>"@region"</code>
                                             }
@@ -589,14 +600,6 @@
         try
         {
             var pattern = model.Pattern;
-            if (pattern == MessagingPattern.TopicFilters)
-            {
-                request = request with
-                {
-                    Priority = string.IsNullOrEmpty(model.Priority) ? null : model.Priority,
-                    Region = string.IsNullOrEmpty(model.Region) ? null : model.Region
-                };
-            }
             var result = await ProducerApi.SendMessageAsync(request, pattern, pageLifetime.Token);
             if (disposed)
             {

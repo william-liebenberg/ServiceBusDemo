@@ -43,14 +43,10 @@ public class TopicFiltersTests
     {
         using var handler = new RecordingHandler();
         using var http = CreateClient(handler);
-        await using var context = new BunitContext();
         var feed = new DeliveryFeed();
-        context.Services.AddSingleton(feed);
-        context.Services.AddSingleton(new ProducerApiClient(http));
-        context.Services.AddControlTestClients();
+        await using var context = CreateHomeContext(http, feed);
         var home = context.Render<Home>();
-        var radio = (IHtmlInputElement)home.Find("#pattern-topic-filters");
-        radio.Change(radio.Value);
+        SelectPattern(home, "topic-filters");
 
         Assert.Equal("Priority (optional)", home.Find("label[for=route-priority]").TextContent);
         Assert.Equal("Region (optional)", home.Find("label[for=route-region]").TextContent);
@@ -59,6 +55,7 @@ public class TopicFiltersTests
         Assert.Equal(new[] { "high-priority", "eu-orders", "all" }, home.FindAll("#routing-rules tbody th").Select(cell => cell.TextContent));
         Assert.Equal(new[] { "Priority = 'High'", "Region = 'EU'" }, home.FindAll("#routing-rules td code").Select(cell => cell.TextContent));
         Assert.Contains("Unfiltered", home.Find("#routing-rules").TextContent);
+        Assert.Contains("Subscription depth is unavailable for Topic filters (routed-events)", home.Find("#depth-note").TextContent);
         Assert.Contains("unavailable", home.Find("#burst-unavailable").TextContent);
         Assert.True(home.Find("#send-burst").HasAttribute("disabled"));
         Assert.True(home.Find(".burst-inputs").HasAttribute("disabled"));
@@ -66,7 +63,6 @@ public class TopicFiltersTests
         home.Find("#route-priority").Change("High");
         home.Find("#route-region").Change("EU");
         home.Find("#advanced-subject").Input("Orders");
-        home.Find("#advanced-region").Input("West");
         await home.Find("#burst-form").SubmitAsync();
         Assert.Empty(handler.Requests);
         await home.Find("form").SubmitAsync();
@@ -75,7 +71,7 @@ public class TopicFiltersTests
         Assert.Equal("High", (string?)request.Body["priority"]);
         Assert.Equal("EU", (string?)request.Body["region"]);
         Assert.Equal("Orders", (string?)request.Body["subject"]);
-        Assert.Equal("West", (string?)request.Body["applicationProperties"]?["Region"]);
+        Assert.False(request.Body.ContainsKey("applicationProperties"));
 
         string Subscriptions() => home.Find(".reported-subscriptions").TextContent;
         Assert.Equal("None reported", Subscriptions());
@@ -107,14 +103,10 @@ public class TopicFiltersTests
     {
         using var handler = new RecordingHandler();
         using var http = CreateClient(handler);
-        await using var context = new BunitContext();
         var feed = new DeliveryFeed();
-        context.Services.AddSingleton(feed);
-        context.Services.AddSingleton(new ProducerApiClient(http));
-        context.Services.AddControlTestClients();
+        await using var context = CreateHomeContext(http, feed);
         var home = context.Render<Home>();
-        var radio = (IHtmlInputElement)home.Find("#pattern-topic-filters");
-        radio.Change(radio.Value);
+        SelectPattern(home, "topic-filters");
 
         home.Find("#message").Change("Order placed");
         home.Find("#route-priority").Change("High");
@@ -136,6 +128,88 @@ public class TopicFiltersTests
         home.Find(".deliveries button").Click();
         Assert.Equal(new[] { "Not set", "\"EU\"", "\"High\"", "Not set" },
             home.FindAll(".sent-routing-properties dd").Select(value => value.TextContent.Trim()));
+    }
+
+    [Fact]
+    public async Task SwitchingPatternsDoesNotSendRetainedAdvancedPriorityOrRegionToRoutedTopic()
+    {
+        using var handler = new RecordingHandler();
+        using var http = CreateClient(handler);
+        await using var context = CreateHomeContext(http);
+        var home = context.Render<Home>();
+        home.Find("#message").Change("Order placed");
+        home.Find("#advanced-heading").Click();
+        home.Find("#advanced-priority").Change("High");
+        home.Find("#advanced-region").Input("EU");
+        home.Find("#advanced-heading").Click();
+        SelectPattern(home, "topic-filters");
+
+        Assert.Empty(home.FindAll("#advanced-priority, #advanced-region"));
+        await home.Find("form").SubmitAsync();
+        var routed = Assert.Single(handler.Requests);
+        Assert.Equal("/routedMessage", routed.Path);
+        Assert.False(routed.Body.ContainsKey("priority"));
+        Assert.False(routed.Body.ContainsKey("region"));
+        Assert.False(routed.Body.ContainsKey("applicationProperties"));
+        AssertRoutingPropertiesNotSet(home);
+
+        SelectPattern(home, "pubsub");
+        await home.Find("form").SubmitAsync();
+        var broadcast = handler.Requests[1];
+        Assert.Equal("/broadcastMessage", broadcast.Path);
+        Assert.Equal("High", (string?)broadcast.Body["applicationProperties"]?["Priority"]);
+        Assert.Equal("EU", (string?)broadcast.Body["applicationProperties"]?["Region"]);
+    }
+
+    [Theory]
+    [InlineData("Priority", "priority", "High")]
+    [InlineData("Region", "region", "EU")]
+    public async Task HomeReservesExactRoutingKeysButKeepsDifferentlyCasedCustomMetadata(string routingKey, string customKey, string value)
+    {
+        using var handler = new RecordingHandler();
+        using var http = CreateClient(handler);
+        await using var context = CreateHomeContext(http);
+        var home = context.Render<Home>();
+        SelectPattern(home, "topic-filters");
+        home.Find("#message").Change("Order placed");
+        home.Find("#advanced-heading").Click();
+        home.Find("#add-property").Click();
+        home.Find("#property-key-1").Input(routingKey);
+        home.Find("#property-value-1").Input(value);
+
+        await home.Find("form").SubmitAsync();
+        Assert.Empty(handler.Requests);
+        Assert.Contains($"set {routingKey} in Routing properties", home.Find("#advanced-errors").TextContent);
+
+        home.Find("#property-key-1").Input(customKey);
+        await home.Find("form").SubmitAsync();
+        var request = Assert.Single(handler.Requests);
+        Assert.False(request.Body.ContainsKey(customKey));
+        var properties = Assert.IsType<JsonObject>(request.Body["applicationProperties"]);
+        var property = Assert.Single(properties);
+        Assert.Equal(customKey, property.Key);
+        Assert.Equal(value, (string?)property.Value);
+        Assert.Contains(customKey, home.Find(".sent-metadata").TextContent);
+        AssertRoutingPropertiesNotSet(home);
+    }
+
+    private static void SelectPattern(IRenderedComponent<Home> home, string pattern)
+    {
+        var radio = (IHtmlInputElement)home.Find($"#pattern-{pattern}");
+        radio.Change(radio.Value);
+    }
+
+    private static void AssertRoutingPropertiesNotSet(IRenderedComponent<Home> home) =>
+        Assert.Equal(new[] { "Not set", "Not set" }, home.FindAll(".sent-routing-properties dd").Select(value => value.TextContent.Trim()));
+
+    private static BunitContext CreateHomeContext(HttpClient http, DeliveryFeed? feed = null)
+    {
+        var context = new BunitContext();
+        context.Services.AddSingleton(feed ?? new DeliveryFeed());
+        context.Services.AddSingleton(new ProducerApiClient(http));
+        context.Services.AddControlTestClients();
+        context.JSInterop.SetupVoid("Blazor._internal.domWrapper.focus", _ => true).SetVoidResult();
+        return context;
     }
 
     private static DeliveryEvent Report(string id, string consumer, string subscription) =>

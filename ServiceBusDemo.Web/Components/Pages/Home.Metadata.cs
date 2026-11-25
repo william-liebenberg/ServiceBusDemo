@@ -61,7 +61,10 @@ public partial class Home
     {
         var properties = ValidateMetadata(out var optionalSubject);
         return metadataErrors.Count == 0
-            ? new(message, optionalSubject, ApplicationProperties: properties.Count == 0 ? null : new ReadOnlyDictionary<string, string>(properties))
+            ? new(message, optionalSubject,
+                ApplicationProperties: properties.Count == 0 ? null : new ReadOnlyDictionary<string, string>(properties),
+                Priority: IsTopicFilters && !string.IsNullOrWhiteSpace(model.Priority) ? model.Priority : null,
+                Region: IsTopicFilters && !string.IsNullOrWhiteSpace(model.Region) ? model.Region : null)
             : null;
     }
 
@@ -75,11 +78,11 @@ public partial class Home
         }
 
         var properties = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        if (!string.IsNullOrWhiteSpace(priority))
+        if (!IsTopicFilters && !string.IsNullOrWhiteSpace(priority))
         {
             properties.Add("Priority", priority);
         }
-        if (!string.IsNullOrWhiteSpace(region))
+        if (!IsTopicFilters && !string.IsNullOrWhiteSpace(region))
         {
             if (!MessageMetadataRules.IsValid(region, MessageMetadataRules.ValueLimit))
             {
@@ -94,6 +97,10 @@ public partial class Home
             if (!MessageMetadataRules.IsValid(row.Key, MessageMetadataRules.NameLimit))
             {
                 metadataErrors.Add($"Property {i + 1} key must be non-blank and at most {MessageMetadataRules.NameLimit} characters.");
+            }
+            else if (IsTopicFilters && row.Key is "Priority" or "Region")
+            {
+                metadataErrors.Add($"Property {i + 1}: set {row.Key} in Routing properties instead of using it as a custom key.");
             }
             else if (!properties.TryAdd(row.Key, row.Value))
             {
