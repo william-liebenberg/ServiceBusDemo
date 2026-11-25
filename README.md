@@ -195,6 +195,27 @@ Consumer control endpoints are internal in Aspire. The Web app uses `GET /contro
 
 The Web frontend and both consumers accept only loopback hostnames by default (`localhost`, `127.0.0.1`, `[::1]`). For a different trusted setup, set `AllowedHosts` per app to an explicit semicolon-separated list of the hostnames it needs to accept, without ports or a wildcard. Host filtering does not authenticate callers.
 
+### Subscription depth in the emulator
+
+**Result: the management call responds, but does not provide usable active or dead-letter counts through the SDK.**
+Microsoft's [emulator overview and limitations](https://learn.microsoft.com/en-us/azure/service-bus-messaging/overview-emulator) describe .NET entity management, and the [local testing guide](https://learn.microsoft.com/en-us/azure/service-bus-messaging/test-locally-with-service-bus-emulator) specifies the separate HTTP management port (5300 by default). That does not guarantee that subscription runtime counts decode correctly.
+
+The AppHost launched with `dotnet run --project ServiceBusDemo.AppHost` selected `mcr.microsoft.com/azure-messaging/servicebus-emulator:2.0.0`. To keep it running for the probe, the same AppHost was started detached with `aspire start --apphost ServiceBusDemo.AppHost --no-build -lp https`. Docker was remote in this environment: host-loopback checks timed out or refused connections, so the probe shared the emulator container's network namespace and used `Endpoint=sb://127.0.0.1:5300;...;UseDevelopmentEmulator=true` for management and port 5672 for AMQP.
+
+With Azure.Messaging.ServiceBus 7.20.2, `ServiceBusAdministrationClient.GetSubscriptionRuntimePropertiesAsync` returned HTTP 200 on all three configured subscriptions. After sending with no receivers, completing shared messages and dead-lettering a broadcast copy, the SDK still reported `ActiveMessageCount=0` and `DeadLetterMessageCount=0` throughout. AMQP peek independently found two active messages and one dead-letter on `broadcast-events/consumer-one`, and three active messages on `broadcast-events/consumer-two`. The HTTP bodies had `MessageCount=3` and count details with nonstandard XML names (for example, `iqV` and `iqv`), not the named SDK count fields. This is not a startup failure or evidence of an empty subscription. `SubscriptionRuntimeProperties` also has no `ScheduledMessageCount` property; even with a future-dated send in the probe there was no named scheduled count available from this call.
+
+Home therefore shows **Estimated pending** and **Dead-letter: unavailable** for each subscription. It counts distinct acknowledged message IDs for the row's topic that have no matching report for that topic and subscription in the current delivery feed. Either consumer can satisfy the shared subscription's report; broadcast subscriptions are counted independently. There is no broker polling for these estimates.
+
+The estimate covers only sends acknowledged on this page, not external sends or sends in other tabs. Reports are best-effort, precede broker completion, and the feed retains only the most recent 200 reports. Clearing the feed or evicting an older report can increase the estimate; reloading loses this page's sent history.
+
+To walk through the estimate, start with a fresh Home page:
+
+1. Pause both consumers and wait for both badges to show **Paused**. Send a competing-consumer burst of two. Only the shared row should rise, to two.
+2. Resume Consumer One. Watch the shared row return to zero as its reports arrive.
+3. With Consumer Two still paused, send one publish/subscribe message. The `consumer-one` copy should quickly return to zero after its report; `consumer-two` should stay at one until you resume Consumer Two and its report arrives.
+
+Verified separately in Chromium against the running AppHost and emulator: the shared estimate rose from 0 to 2 with both consumers paused and returned to 0 after resuming Consumer One. A broadcast then left Consumer Two's estimate at 1 while Consumer One's was 0; resuming Consumer Two returned all three rows to 0. The UI sequence is also covered in bUnit with simulated control and delivery responses.
+
 ### Run the tests
 
 ```powershell
