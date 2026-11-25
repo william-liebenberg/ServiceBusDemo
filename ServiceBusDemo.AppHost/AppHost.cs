@@ -1,4 +1,8 @@
+using System.Globalization;
+using System.Text.Json.Nodes;
+
 var builder = DistributedApplication.CreateBuilder(args);
+const int emulatorMaxDeliveryCount = 5;
 
 var asb = builder.AddAzureServiceBus("messaging")
     .RunAsEmulator(emulator => emulator.WithConfiguration(configuration =>
@@ -6,6 +10,17 @@ var asb = builder.AddAzureServiceBus("messaging")
         var namespaceConfiguration = configuration["UserConfig"]?["Namespaces"]?[0]
             ?? throw new InvalidOperationException("The Azure Service Bus emulator configuration must define a namespace.");
         namespaceConfiguration["Name"] = "sbemulatorns";
+        foreach (var topic in namespaceConfiguration["Topics"]!.AsArray())
+        {
+            foreach (var subscription in topic!["Subscriptions"]!.AsArray())
+            {
+                if (subscription!["Properties"] is not JsonObject properties)
+                {
+                    subscription["Properties"] = properties = new JsonObject();
+                }
+                properties["MaxDeliveryCount"] = emulatorMaxDeliveryCount;
+            }
+        }
     }));
 
 // Competing consumers: both consumers share a single subscription, so each message is processed by only one of them.
@@ -29,6 +44,7 @@ var producer = builder.AddProject<Projects.ServiceBusDemo_Producer>("producer")
 var webfrontend = builder.AddProject<Projects.ServiceBusDemo_Web>("webfrontend")
     .WithExternalHttpEndpoints()
     .WithHttpHealthCheck("/health")
+    .WithEnvironment("ServiceBus__EmulatorMaxDeliveryCount", emulatorMaxDeliveryCount.ToString(CultureInfo.InvariantCulture))
     .WithReference(producer)
     .WithParentRelationship(producer)
     .WaitFor(producer);

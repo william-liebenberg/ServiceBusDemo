@@ -52,7 +52,8 @@ public class HomeBurstAccessibilityTests
     }
 
     private static DeliveryEvent Report(string id, string consumer) =>
-        new(id, nameof(MessagingPattern.CompetingConsumers), consumer, "topic", "subscription", "Order 42", 1, DateTimeOffset.UnixEpoch);
+        new(id, nameof(MessagingPattern.CompetingConsumers), consumer, "topic", "subscription", "Order 42", 1, DateTimeOffset.UnixEpoch,
+            DeliveryOutcomes.Completed, DateTimeOffset.UnixEpoch.AddMinutes(1), DateTimeOffset.UnixEpoch);
 
     private static BunitContext CreateContext(HttpClient client, DeliveryFeed feed)
     {

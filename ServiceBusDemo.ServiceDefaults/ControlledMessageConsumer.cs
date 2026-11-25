@@ -53,11 +53,11 @@ public abstract class ControlledMessageConsumer : BackgroundService
 
                 var processor = _client.CreateProcessor(slot.Topic, slot.Subscription, new ServiceBusProcessorOptions
                 {
-                    AutoCompleteMessages = true,
-                    MaxConcurrentCalls = 1
+                    AutoCompleteMessages = false,
+                    MaxConcurrentCalls = 2
                 });
                 slot.Processor = processor;
-                processor.ProcessMessageAsync += args => ReportDeliveryAsync(slot, args);
+                processor.ProcessMessageAsync += args => HandleDeliveryAsync(slot, args);
                 processor.ProcessErrorAsync += args =>
                 {
                     _logger.LogError(args.Exception, "[{Pattern}] {Consumer} error processing message from {EntityPath}",
@@ -198,17 +198,52 @@ public abstract class ControlledMessageConsumer : BackgroundService
     private IReadOnlyList<SubscriptionStatus> SnapshotSubscriptions() => Array.AsReadOnly(_processors
         .Select(slot => new SubscriptionStatus(slot.Pattern, slot.Topic, slot.Subscription, slot.State)).ToArray());
 
-    private Task ReportDeliveryAsync(ProcessorSlot slot, ProcessMessageEventArgs args)
+    private async Task HandleDeliveryAsync(ProcessorSlot slot, ProcessMessageEventArgs args)
     {
         var receivedAt = DateTimeOffset.UtcNow;
-        var body = Encoding.UTF8.GetString(args.Message.Body.ToArray());
+        var message = args.Message;
+        var initialLockedUntil = message.LockedUntil;
+        var deliveryCount = message.DeliveryCount;
+        var token = args.CancellationToken;
+        var properties = message.ApplicationProperties;
+        var body = Encoding.UTF8.GetString(message.Body.ToArray());
         var consumer = _status.Consumer;
         _logger.LogInformation(
             "[{Pattern}] {Consumer} received message {MessageId} from {Topic}/{Subscription}: {Body}",
-            slot.Pattern, consumer, args.Message.MessageId, slot.Topic, slot.Subscription, body);
-        _reports.Enqueue(new DeliveryEvent(args.Message.MessageId, slot.Pattern, consumer, slot.Topic,
-            slot.Subscription, body, args.Message.DeliveryCount, receivedAt));
-        return Task.CompletedTask;
+            slot.Pattern, consumer, message.MessageId, slot.Topic, slot.Subscription, body);
+
+        if (properties.TryGetValue(FailureLab.DelaySecondsProperty, out var delay)
+            && delay is int seconds and >= FailureLab.Minimum and <= FailureLab.MaxDelaySeconds)
+        {
+            await Task.Delay(TimeSpan.FromSeconds(seconds), token);
+        }
+
+        token.ThrowIfCancellationRequested();
+        var shouldFail = (properties.TryGetValue(FailureLab.AlwaysFailProperty, out var poison) && poison is true)
+            || (properties.TryGetValue(FailureLab.FailFirstCountProperty, out var failFirst)
+                && failFirst is int count and >= FailureLab.Minimum and <= FailureLab.MaxFailFirstCount
+                && deliveryCount <= count);
+
+        string outcome;
+        if (!shouldFail)
+        {
+            await args.CompleteMessageAsync(message, token);
+            outcome = DeliveryOutcomes.Completed;
+        }
+        else if (deliveryCount < FailureLab.AttemptLimit)
+        {
+            await args.AbandonMessageAsync(message, cancellationToken: token);
+            outcome = DeliveryOutcomes.Abandoned;
+        }
+        else
+        {
+            await args.DeadLetterMessageAsync(message, FailureLab.DeadLetterReason,
+                "The demo handler intentionally failed at or beyond its attempt limit.", token);
+            outcome = DeliveryOutcomes.DeadLettered;
+        }
+
+        _reports.Enqueue(new DeliveryEvent(message.MessageId, slot.Pattern, consumer, slot.Topic,
+            slot.Subscription, body, deliveryCount, receivedAt, outcome, initialLockedUntil, DateTimeOffset.UtcNow));
     }
 
     private sealed class ProcessorSlot(string pattern, string topic, string subscription)

@@ -77,5 +77,6 @@ public class BurstDeliveryTrackerTests
             .GetValue(feed) as Delegate)?.GetInvocationList() ?? [];
 
     private static DeliveryEvent Report(string id, string consumer = "ConsumerOne", string pattern = "PubSub") =>
-        new(id, pattern, consumer, "broadcast-events", "consumer-one", "Order placed", 1, DateTimeOffset.UnixEpoch);
+        new(id, pattern, consumer, "broadcast-events", "consumer-one", "Order placed", 1, DateTimeOffset.UnixEpoch,
+            DeliveryOutcomes.Completed, DateTimeOffset.UnixEpoch.AddMinutes(1), DateTimeOffset.UnixEpoch);
 }

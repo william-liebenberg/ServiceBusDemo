@@ -2,7 +2,7 @@ namespace ServiceBusDemo.Web;
 
 public class ProducerApiClient(HttpClient httpClient)
 {
-    public async Task<SendMessageResult> SendMessageAsync(string message, MessagingPattern pattern, CancellationToken cancellationToken = default)
+    public async Task<SendMessageResult> SendMessageAsync(SendMessageRequest request, MessagingPattern pattern, CancellationToken cancellationToken = default)
     {
         var endpoint = pattern switch
         {
@@ -11,7 +11,7 @@ public class ProducerApiClient(HttpClient httpClient)
             _ => throw new ArgumentOutOfRangeException(nameof(pattern), pattern, null)
         };
 
-        using var response = await httpClient.PostAsJsonAsync(endpoint, new SendMessageRequest(message), cancellationToken);
+        using var response = await httpClient.PostAsJsonAsync(endpoint, request, cancellationToken);
 
         if (!response.IsSuccessStatusCode)
         {
@@ -33,6 +33,6 @@ public enum MessagingPattern
     PubSub
 }
 
-public record SendMessageRequest(string Message);
+public record SendMessageRequest(string Message, int? FailFirstCount = null, bool AlwaysFail = false, int? DelaySeconds = null);
 
 public record SendMessageResult(string MessageId, string Topic);

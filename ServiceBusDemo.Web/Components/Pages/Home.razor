@@ -5,6 +5,7 @@
 @inject ProducerApiClient ProducerApi
 @inject DeliveryFeed Feed
 @inject ILogger<Home> Logger
+@inject IServiceProvider Services
 
 @{
     var snapshot = Feed.Snapshot(out var reportCount, out var clearCount);
@@ -64,6 +65,45 @@
             <ValidationMessage For="() => model.Message" />
         </div>
     </div>
+
+    <fieldset class="mb-3" disabled="@Busy" aria-describedby="failure-lab-help">
+        <legend class="form-label fs-6">Failure lab</legend>
+        <p id="failure-lab-help" class="text-body-secondary">
+            Applies to single and burst sends. Poison overrides fail-first; the delay applies to every attempt.
+            The application dead-letters intentional failures on attempt @FailureLab.AttemptLimit or later.
+            @(EmulatorMaxDeliveryCount is int brokerLimit
+                ? $"The local emulator is configured with a broker limit of {brokerLimit}."
+                : "The broker limit is not specified here; its default or external configuration applies.")
+            External brokers must allow at least @FailureLab.AttemptLimit deliveries to see explicit dead-lettering.
+            Redelivery can repeat work: at-least-once handlers must be idempotent.
+        </p>
+        <div class="form-check">
+            <input id="fail-first" type="checkbox" class="form-check-input" @bind="failFirst" />
+            <label for="fail-first" class="form-check-label">Fail first N attempts</label>
+        </div>
+        @if (failFirst)
+        {
+            <label for="fail-first-count" class="form-label">Failure count (1–10)</label>
+            <input id="fail-first-count" type="number" min="1" max="10" step="1" class="form-control" @bind="failFirstCount" @bind:event="oninput"
+                   aria-invalid="@(failFirstError is not null ? "true" : "false")" aria-describedby="fail-first-error" />
+            <div id="fail-first-error" class="validation-message" aria-live="polite">@failFirstError</div>
+        }
+        <div class="form-check">
+            <input id="always-fail" type="checkbox" class="form-check-input" @bind="alwaysFail" />
+            <label for="always-fail" class="form-check-label">Poison message (always fail)</label>
+        </div>
+        <div class="form-check">
+            <input id="slow-handler" type="checkbox" class="form-check-input" @bind="slowHandler" />
+            <label for="slow-handler" class="form-check-label">Slow handler</label>
+        </div>
+        @if (slowHandler)
+        {
+            <label for="delay-seconds" class="form-label">Delay in seconds (1–120)</label>
+            <input id="delay-seconds" type="number" min="1" max="120" step="1" class="form-control" @bind="delaySeconds" @bind:event="oninput"
+                   aria-invalid="@(delaySecondsError is not null ? "true" : "false")" aria-describedby="delay-seconds-error" />
+            <div id="delay-seconds-error" class="validation-message" aria-live="polite">@delaySecondsError</div>
+        }
+    </fieldset>
 
     <button type="submit" class="btn btn-primary" disabled="@Busy">
         @if (isSending)
@@ -190,6 +230,8 @@
                     var matchDescriptionId = $"delivery-matches-{card.Sequence}";
                     var isHighlighted = active is not null && delivery.MessageId == highlightedId;
                     var receivedAt = delivery.ReceivedAt.ToLocalTime();
+                    var initialLock = delivery.InitialLockedUntil.ToLocalTime();
+                    var settledAt = delivery.SettledAt.ToLocalTime();
                     var patternClass = delivery.Pattern switch
                     {
                         nameof(MessagingPattern.CompetingConsumers) => "pattern-competing",
@@ -212,7 +254,17 @@
                             <dt>Body</dt>
                             <dd class="delivery-body">@delivery.Body</dd>
                             <dt>Received (local time)</dt>
-                            <dd class="mb-0"><time datetime="@receivedAt.ToString("O")">@receivedAt.ToString("G") (UTC@(receivedAt.ToString("zzz")))</time></dd>
+                            <dd><time datetime="@receivedAt.ToString("O")">@LocalTimeLabel(receivedAt)</time></dd>
+                            <dt>Delivery count</dt>
+                            <dd>@delivery.DeliveryCount</dd>
+                            <dt>Outcome</dt>
+                            <dd>@delivery.Outcome</dd>
+                            <dt>Initial lock expiration (local time)</dt>
+                            <dd><time datetime="@initialLock.ToString("O")">@LocalTimeLabel(initialLock)</time></dd>
+                            <dt>Settled (local time)</dt>
+                            <dd><time datetime="@settledAt.ToString("O")">@LocalTimeLabel(settledAt)</time></dd>
+                            <dt>Elapsed handling time</dt>
+                            <dd class="mb-0">@((delivery.SettledAt - delivery.ReceivedAt).TotalSeconds.ToString("0.000")) s</dd>
                         </dl>
                     </article>
                 }
@@ -397,20 +449,25 @@
             return;
         }
 
-        isSending = true;
         statusMessage = null;
+        var request = CreateSendRequest();
+        if (request is null)
+        {
+            return;
+        }
+
+        isSending = true;
 
         try
         {
-            var message = model.Message!.Trim();
             var pattern = model.Pattern;
-            var result = await ProducerApi.SendMessageAsync(message, pattern, pageLifetime.Token);
+            var result = await ProducerApi.SendMessageAsync(request, pattern, pageLifetime.Token);
             if (disposed)
             {
                 return;
             }
 
-            sentMessages.Insert(0, new SentMessage(result.MessageId, pattern, result.Topic, message, DateTimeOffset.UtcNow));
+            sentMessages.Insert(0, new SentMessage(result.MessageId, pattern, result.Topic, request.Message, DateTimeOffset.UtcNow));
             statusMessage = $"Message {result.MessageId} published to '{result.Topic}'.";
             isError = false;
         }

@@ -110,9 +110,13 @@ public class HomeTests
         var card = home.Find($"#{consumer} .pattern-competing");
         var receivedAt = competing.ReceivedAt.ToLocalTime();
         Assert.Equal("Competing consumers", card.QuerySelector(".delivery-pattern")!.TextContent);
-        Assert.Equal(new[] { competing.Subscription, competing.MessageId, competing.Body, $"{receivedAt:G} (UTC{receivedAt:zzz})" },
-            card.QuerySelectorAll("dd").Select(field => field.TextContent));
-        Assert.Equal("Received (local time)", card.QuerySelectorAll("dt").Last().TextContent);
+        Assert.Equal(new[] { competing.Subscription, competing.MessageId, competing.Body, $"{receivedAt:G} (UTC{receivedAt:zzz})", "1", "Completed" },
+            card.QuerySelectorAll("dd").Take(6).Select(field => field.TextContent));
+        Assert.Contains("Initial lock expiration (local time)", card.TextContent);
+        Assert.Contains("Elapsed handling time", card.TextContent);
+        Assert.Equal(new[] { competing.ReceivedAt, competing.InitialLockedUntil, competing.SettledAt }
+                .Select(time => time.ToLocalTime().ToString("O")),
+            card.QuerySelectorAll("time").Select(time => time.GetAttribute("datetime")));
         Assert.Empty(card.QuerySelectorAll("b"));
         Assert.Equal(receivedAt.ToString("O"), card.QuerySelector("time")!.GetAttribute("datetime"));
 
@@ -332,7 +336,8 @@ public class HomeTests
 
     private static DeliveryEvent Delivery(string id, string consumer, string pattern = "PubSub", string subscription = "consumer-one") =>
         new(id, pattern, consumer, pattern == "PubSub" ? "broadcast-events" : "business-events", subscription,
-            "<b>Order placed</b>", 1, DateTimeOffset.UnixEpoch);
+            "<b>Order placed</b>", 1, DateTimeOffset.UnixEpoch, DeliveryOutcomes.Completed,
+            DateTimeOffset.UnixEpoch.AddMinutes(1), DateTimeOffset.UnixEpoch);
 
     private static BunitContext CreateContext(HttpClient client, DeliveryFeed feed)
     {

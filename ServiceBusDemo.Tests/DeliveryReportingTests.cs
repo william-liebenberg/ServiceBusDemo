@@ -33,7 +33,7 @@ public class DeliveryReportingTests
         var before = DateTimeOffset.UtcNow;
         foreach (var processor in bus.Processors)
         {
-            await processor.DeliverAsync(NewMessage(processor.Topic)).WaitAsync(WaitLimit, token);
+            await processor.DeliverAsync(NewMessage(processor.Topic), token).WaitAsync(WaitLimit, token);
         }
 
         var requests = new[] { await handler.NextAsync(token), await handler.NextAsync(token) };
@@ -46,7 +46,10 @@ public class DeliveryReportingTests
             Assert.Equal(consumerName, request.Delivery.Consumer);
             Assert.Equal("order £42", request.Delivery.Body);
             Assert.Equal(4, request.Delivery.DeliveryCount);
+            Assert.Equal(DeliveryOutcomes.Completed, request.Delivery.Outcome);
             Assert.InRange(request.Delivery.ReceivedAt, before, DateTimeOffset.UtcNow);
+            Assert.InRange(request.Delivery.SettledAt, request.Delivery.ReceivedAt, DateTimeOffset.UtcNow);
+            Assert.Equal(InitialLock, request.Delivery.InitialLockedUntil);
         });
         Assert.Equal(("CompetingConsumers", "business-events", "business-events", "business-events"), Routing(requests[0].Delivery));
         Assert.Equal(("PubSub", "broadcast-events", broadcastSubscription, "broadcast-events"), Routing(requests[1].Delivery));
@@ -126,11 +129,11 @@ public class DeliveryReportingTests
         await consumer.StartAsync(token);
         await consumer.ExecuteTask!.WaitAsync(token);
         var processor = bus.Processors[0];
-        await processor.DeliverAsync(NewMessage("in-flight")).WaitAsync(token);
+        await processor.DeliverAsync(NewMessage("in-flight"), token).WaitAsync(token);
         await handler.NextAsync(token);
         for (var i = 0; i < 257; i++)
         {
-            await processor.DeliverAsync(NewMessage($"queued-{i}")).WaitAsync(token);
+            await processor.DeliverAsync(NewMessage($"queued-{i}"), token).WaitAsync(token);
         }
 
         Assert.Equal(1, handler.Attempts);
@@ -141,6 +144,56 @@ public class DeliveryReportingTests
         await requestCancelled.Task.WaitAsync(token);
         Assert.Equal(1, handler.Attempts);
         Assert.Single(logs.Messages);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task SettlementUsesBrokerAttemptsAndOnlyReportsSuccess(bool useConsumerOne)
+    {
+        var token = TestContext.Current.CancellationToken;
+        using var handler = new RecordingHandler(_ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.Accepted)));
+        using var host = CreateHost(handler, new WarningLog());
+        await host.StartAsync(token);
+        var bus = new TestBusClient();
+        using var consumer = CreateConsumer(useConsumerOne, bus, host);
+        await consumer.StartAsync(token);
+        await consumer.ExecuteTask!.WaitAsync(WaitLimit, token);
+
+        foreach (var processor in bus.Processors)
+        {
+            var failFirst = new Dictionary<string, object> { [FailureLab.FailFirstCountProperty] = 2 };
+            var poison = new Dictionary<string, object>(failFirst) { [FailureLab.AlwaysFailProperty] = true };
+            await VerifyAsync(1, failFirst, DeliveryOutcomes.Abandoned);
+            await VerifyAsync(2, failFirst, DeliveryOutcomes.Abandoned);
+            await VerifyAsync(3, failFirst, DeliveryOutcomes.Completed);
+            await VerifyAsync(4, poison, DeliveryOutcomes.Abandoned);
+            await VerifyAsync(5, poison, DeliveryOutcomes.DeadLettered);
+            await VerifyAsync(6, poison, DeliveryOutcomes.DeadLettered);
+
+            using var delay = CancellationTokenSource.CreateLinkedTokenSource(token);
+            var pending = processor.DeliverAsync(NewMessage("cancelled", properties: new() { [FailureLab.DelaySecondsProperty] = 120 }), delay.Token);
+            Assert.False(pending.IsCompleted);
+            delay.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending.WaitAsync(WaitLimit, token));
+            Assert.Equal(6, processor.Receiver.Settlements.Count);
+
+            var error = new ServiceBusException("The lock was lost.", ServiceBusFailureReason.MessageLockLost);
+            processor.Receiver.SettlementError = error;
+            Assert.Same(error, await Assert.ThrowsAsync<ServiceBusException>(() => processor.DeliverAsync(NewMessage("lost"), token)));
+            processor.Receiver.SettlementError = null;
+            await VerifyAsync(1, [], DeliveryOutcomes.Completed, "after-error");
+
+            async Task VerifyAsync(int attempt, Dictionary<string, object> options, string outcome, string id = "same-id")
+            {
+                await processor.DeliverAsync(NewMessage(id, attempt, options), token).WaitAsync(WaitLimit, token);
+                var report = (await handler.NextAsync(token)).Delivery;
+                Assert.Equal((id, attempt, outcome), (report.MessageId, report.DeliveryCount, report.Outcome));
+                Assert.Equal(outcome, processor.Receiver.Settlements.Last());
+            }
+        }
+        await consumer.StopAsync(token);
+        await host.StopAsync(token);
     }
 
     private static BackgroundService CreateConsumer(bool useConsumerOne, TestBusClient bus, IHost host)
@@ -156,10 +209,14 @@ public class DeliveryReportingTests
         (delivery.Pattern, delivery.Topic, delivery.Subscription, delivery.MessageId);
 
     private static DeliveryEvent Example(string id) => new(id, "CompetingConsumers", "ConsumerOne", "business-events",
-        "business-events", "body", 1, DateTimeOffset.UtcNow);
+        "business-events", "body", 1, DateTimeOffset.UnixEpoch, DeliveryOutcomes.Completed,
+        DateTimeOffset.UnixEpoch.AddMinutes(1), DateTimeOffset.UnixEpoch);
 
-    private static ServiceBusReceivedMessage NewMessage(string id) =>
-        ServiceBusModelFactory.ServiceBusReceivedMessage(body: BinaryData.FromString("order £42"), messageId: id, deliveryCount: 4);
+    private static readonly DateTimeOffset InitialLock = DateTimeOffset.UnixEpoch.AddMinutes(1);
+
+    private static ServiceBusReceivedMessage NewMessage(string id, int count = 4, Dictionary<string, object>? properties = null) =>
+        ServiceBusModelFactory.ServiceBusReceivedMessage(body: BinaryData.FromString("order £42"), messageId: id,
+            deliveryCount: count, properties: properties, lockedUntil: InitialLock);
 
     private static IHost CreateHost(RecordingHandler handler, WarningLog logs, Action<HttpClient>? configure = null)
     {
@@ -181,8 +238,8 @@ public class DeliveryReportingTests
 
         public override ServiceBusProcessor CreateProcessor(string topicName, string subscriptionName, ServiceBusProcessorOptions options)
         {
-            Assert.True(options.AutoCompleteMessages);
-            Assert.Equal(1, options.MaxConcurrentCalls);
+            Assert.False(options.AutoCompleteMessages);
+            Assert.True(options.MaxConcurrentCalls >= 2);
             var processor = new TestProcessor(topicName);
             Processors.Add(processor);
             return processor;
@@ -191,16 +248,40 @@ public class DeliveryReportingTests
 
     private sealed class TestProcessor(string topic) : ServiceBusProcessor
     {
-        private readonly TestReceiver _receiver = new();
+        public TestReceiver Receiver { get; } = new();
         public string Topic => topic;
         public override Task StartProcessingAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
         public override Task StopProcessingAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
         public override Task CloseAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
-        public Task DeliverAsync(ServiceBusReceivedMessage message) => OnProcessMessageAsync(new ProcessMessageEventArgs(
-            message, _receiver, new CancellationToken(canceled: true)));
+        public Task DeliverAsync(ServiceBusReceivedMessage message, CancellationToken token = default) =>
+            OnProcessMessageAsync(new ProcessMessageEventArgs(message, Receiver, token));
     }
 
-    private sealed class TestReceiver : ServiceBusReceiver;
+    private sealed class TestReceiver : ServiceBusReceiver
+    {
+        public List<string> Settlements { get; } = [];
+        public Exception? SettlementError { get; set; }
+
+        public override Task CompleteMessageAsync(ServiceBusReceivedMessage message, CancellationToken cancellationToken = default) =>
+            Settle(DeliveryOutcomes.Completed);
+
+        public override Task AbandonMessageAsync(ServiceBusReceivedMessage message,
+            IDictionary<string, object>? propertiesToModify = null, CancellationToken cancellationToken = default) =>
+            Settle(DeliveryOutcomes.Abandoned);
+
+        public override Task DeadLetterMessageAsync(ServiceBusReceivedMessage message, string deadLetterReason,
+            string? deadLetterErrorDescription = null, CancellationToken cancellationToken = default)
+        {
+            Assert.Equal(FailureLab.DeadLetterReason, deadLetterReason);
+            return Settle(DeliveryOutcomes.DeadLettered);
+        }
+
+        private Task Settle(string outcome)
+        {
+            Settlements.Add(outcome);
+            return SettlementError is { } error ? Task.FromException(error) : Task.CompletedTask;
+        }
+    }
 
     private sealed record Request(HttpMethod Method, Uri Uri, string? MediaType, DeliveryEvent Delivery);
 

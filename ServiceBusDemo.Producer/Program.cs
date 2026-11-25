@@ -1,4 +1,6 @@
+using System.Text.Json.Serialization;
 using Azure.Messaging.ServiceBus;
+using ServiceBusDemo.ServiceDefaults;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -44,12 +46,32 @@ static async Task<IResult> PublishAsync(SendMessageRequest request, ServiceBusSe
     {
         return Results.BadRequest("Message is required.");
     }
+    if (request.FailFirstCount is < FailureLab.Minimum or > FailureLab.MaxFailFirstCount)
+    {
+        return Results.BadRequest($"Fail-first count must be from {FailureLab.Minimum} to {FailureLab.MaxFailFirstCount}.");
+    }
+    if (request.DelaySeconds is < FailureLab.Minimum or > FailureLab.MaxDelaySeconds)
+    {
+        return Results.BadRequest($"Delay seconds must be from {FailureLab.Minimum} to {FailureLab.MaxDelaySeconds}.");
+    }
 
     var message = new ServiceBusMessage(request.Message)
     {
         MessageId = Guid.NewGuid().ToString(),
         ContentType = "text/plain"
     };
+    if (request.FailFirstCount is int failFirstCount)
+    {
+        message.ApplicationProperties[FailureLab.FailFirstCountProperty] = failFirstCount;
+    }
+    if (request.AlwaysFail)
+    {
+        message.ApplicationProperties[FailureLab.AlwaysFailProperty] = true;
+    }
+    if (request.DelaySeconds is int delaySeconds)
+    {
+        message.ApplicationProperties[FailureLab.DelaySecondsProperty] = delaySeconds;
+    }
 
     await sender.SendMessageAsync(message, cancellationToken);
     logger.LogInformation("Sent message {MessageId} to topic {Topic}: {Body}", message.MessageId, sender.EntityPath, request.Message);
@@ -57,10 +79,19 @@ static async Task<IResult> PublishAsync(SendMessageRequest request, ServiceBusSe
     return Results.Accepted(value: new { message.MessageId, Topic = sender.EntityPath });
 }
 
-record SendMessageRequest(string Message);
+record SendMessageRequest(string Message,
+    [property: JsonNumberHandling(JsonNumberHandling.Strict)] int? FailFirstCount = null,
+    bool AlwaysFail = false,
+    [property: JsonNumberHandling(JsonNumberHandling.Strict)] int? DelaySeconds = null);
 
 static class SenderKeys
 {
     public const string BusinessEvents = "business-events";
     public const string BroadcastEvents = "broadcast-events";
+}
+
+// Entry point for producer HTTP integration tests.
+namespace ServiceBusDemo.Producer
+{
+    public sealed class ProducerApiMarker;
 }

@@ -145,5 +145,6 @@ public class DeliveryFeedTests
 
     private static DeliveryEvent CreateDelivery(int id) => new(
         id.ToString(), "CompetingConsumers", "ConsumerOne", "business-events", "business-events", "Order placed", 1,
+        DateTimeOffset.UnixEpoch, DeliveryOutcomes.Completed, DateTimeOffset.UnixEpoch.AddMinutes(1),
         DateTimeOffset.UnixEpoch);
 }

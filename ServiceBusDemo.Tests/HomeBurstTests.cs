@@ -391,7 +391,8 @@ public class HomeBurstTests
         }
 
         public void Report(string id, string consumer, string pattern = "CompetingConsumers") =>
-            Feed.Add(new DeliveryEvent(id, pattern, consumer, "topic", "subscription", "Order 42", 1, DateTimeOffset.UnixEpoch));
+            Feed.Add(new DeliveryEvent(id, pattern, consumer, "topic", "subscription", "Order 42", 1, DateTimeOffset.UnixEpoch,
+                DeliveryOutcomes.Completed, DateTimeOffset.UnixEpoch.AddMinutes(1), DateTimeOffset.UnixEpoch));
 
         public async ValueTask DisposeAsync()
         {
