@@ -1,4 +1,5 @@
 using System.Net.Http.Headers;
+using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -37,6 +38,22 @@ public class DeliveryEndpointTests
         Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
         Assert.Equal(delivery, Assert.Single(feed.Snapshot()));
         Assert.Equal(1, notifications);
+    }
+
+    [Fact]
+    public async Task WebRejectsUnexpectedHostBeforeHandlingDelivery()
+    {
+        await using var factory = new WebApplicationFactory<DeliveryFeed>();
+        using var client = factory.CreateClient(new() { AllowAutoRedirect = false });
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/deliveries")
+        {
+            Content = JsonContent.Create(Example)
+        };
+        request.Headers.Host = "unexpected.example:5196";
+        using var rejected = await client.SendAsync(request, TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.BadRequest, rejected.StatusCode);
+        Assert.Empty(factory.Services.GetRequiredService<DeliveryFeed>().Snapshot());
     }
 
     [Fact]

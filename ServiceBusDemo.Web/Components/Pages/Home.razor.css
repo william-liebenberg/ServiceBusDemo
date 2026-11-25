@@ -21,8 +21,10 @@
     color: var(--bs-danger-text-emphasis);
 }
 
-.burst-controls button[aria-disabled="true"] {
+.burst-controls button[aria-disabled="true"],
+.delivery-lanes button[aria-disabled="true"] {
     opacity: var(--bs-btn-disabled-opacity);
+    cursor: default;
 }
 
 .burst-bar {

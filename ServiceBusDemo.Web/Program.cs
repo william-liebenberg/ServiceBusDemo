@@ -25,6 +25,9 @@ builder.Services.AddHttpClient<ProducerApiClient>(client =>
         client.BaseAddress = new("https+http://producer");
     });
 
+builder.Services.AddConsumerControlClient<ConsumerOneControlClient>("https+http://consumer-one");
+builder.Services.AddConsumerControlClient<ConsumerTwoControlClient>("https+http://consumer-two");
+
 var app = builder.Build();
 
 if (!app.Environment.IsDevelopment())

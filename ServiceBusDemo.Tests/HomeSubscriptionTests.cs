@@ -29,6 +29,7 @@ public class HomeSubscriptionTests
         {
             var context = new BunitContext();
             context.Services.AddSingleton(new ProducerApiClient(client));
+            context.Services.AddControlTestClients();
             context.Services.AddSingleton(feed);
             return context;
         }
