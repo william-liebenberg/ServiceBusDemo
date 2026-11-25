@@ -54,6 +54,8 @@ public class TopicFiltersTests
 
         Assert.Equal("Priority (optional)", home.Find("label[for=route-priority]").TextContent);
         Assert.Equal("Region (optional)", home.Find("label[for=route-region]").TextContent);
+        var rulesRegion = home.Find(".table-responsive[role=region][tabindex='0'][aria-labelledby=routing-rules-caption]");
+        Assert.Equal("Routed subscription rules", rulesRegion.QuerySelector("#routing-rules caption#routing-rules-caption")?.TextContent);
         Assert.Equal(new[] { "high-priority", "eu-orders", "all" }, home.FindAll("#routing-rules tbody th").Select(cell => cell.TextContent));
         Assert.Equal(new[] { "Priority = 'High'", "Region = 'EU'" }, home.FindAll("#routing-rules td code").Select(cell => cell.TextContent));
         Assert.Contains("Unfiltered", home.Find("#routing-rules").TextContent);
@@ -96,6 +98,42 @@ public class TopicFiltersTests
         Assert.Empty(home.FindAll(".delivery-card"));
     }
 
+    [Fact]
+    public async Task HomeKeepsTheSubmittedPropertiesForEachRoutedMessage()
+    {
+        using var handler = new RecordingHandler();
+        using var http = CreateClient(handler);
+        await using var context = new BunitContext();
+        var feed = new DeliveryFeed();
+        context.Services.AddSingleton(feed);
+        context.Services.AddSingleton(new ProducerApiClient(http));
+        context.Services.AddControlTestClients();
+        var home = context.Render<Home>();
+        var radio = (IHtmlInputElement)home.Find("#pattern-topic-filters");
+        radio.Change(radio.Value);
+
+        home.Find("#message").Change("Order placed");
+        home.Find("#route-priority").Change("High");
+        await home.Find("form").SubmitAsync();
+        home.Find("#route-priority").Change("");
+        home.Find("#route-region").Change("EU");
+        await home.Find("form").SubmitAsync();
+        home.Find("#route-region").Change("US");
+
+        Assert.False(handler.Requests[0].Body.ContainsKey("region"));
+        Assert.False(handler.Requests[1].Body.ContainsKey("priority"));
+        feed.Add(Report("routed-id", "ConsumerOne", "high-priority"));
+        feed.Add(Report("routed-id-2", "ConsumerTwo", "eu-orders"));
+        home.WaitForAssertion(() => Assert.Equal(new[] { "eu-orders", "high-priority" },
+            home.FindAll(".reported-subscriptions").Select(cell => cell.TextContent)));
+        Assert.Equal(new[] { "Not set", "\"EU\"", "\"High\"", "Not set" },
+            home.FindAll(".sent-routing-properties dd").Select(value => value.TextContent.Trim()));
+
+        home.Find(".deliveries button").Click();
+        Assert.Equal(new[] { "Not set", "\"EU\"", "\"High\"", "Not set" },
+            home.FindAll(".sent-routing-properties dd").Select(value => value.TextContent.Trim()));
+    }
+
     private static DeliveryEvent Report(string id, string consumer, string subscription) =>
         new(id, "TopicFilters", consumer, "routed-events", subscription, "Order placed", 1, DateTimeOffset.UnixEpoch);
 
@@ -113,9 +151,10 @@ public class TopicFiltersTests
             Assert.Equal(HttpMethod.Post, request.Method);
             var body = await request.Content!.ReadFromJsonAsync<JsonObject>(cancellationToken);
             Requests.Add((request.RequestUri!.AbsolutePath, body!));
+            var id = Requests.Count == 1 ? "routed-id" : $"routed-id-{Requests.Count}";
             return new HttpResponseMessage(HttpStatusCode.Accepted)
             {
-                Content = JsonContent.Create(new SendMessageResult("routed-id", "routed-events"))
+                Content = JsonContent.Create(new SendMessageResult(id, "routed-events"))
             };
         }
     }

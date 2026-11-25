@@ -77,9 +77,9 @@
                 </div>
             </div>
         </fieldset>
-        <div class="table-responsive">
+        <div class="table-responsive" role="region" tabindex="0" aria-labelledby="routing-rules-caption">
             <table id="routing-rules" class="table table-sm caption-top">
-                <caption>Routed subscription rules</caption>
+                <caption id="routing-rules-caption">Routed subscription rules</caption>
                 <thead><tr><th scope="col">Subscription</th><th scope="col">Rule</th><th scope="col">Consumer</th></tr></thead>
                 <tbody>
                     <tr><th scope="row"><code>high-priority</code></th><td><code>Priority = 'High'</code></td><td>Consumer One</td></tr>
@@ -278,6 +278,7 @@
                     <th>Consumers</th>
                     @if (hasRoutedMessages)
                     {
+                        <th>Submitted routing properties</th>
                         <th>Reported subscriptions</th>
                     }
                 </tr>
@@ -297,7 +298,41 @@
                         <td>@(recipientLabels.Length > 0 ? recipientLabels : "None reported")</td>
                         @if (hasRoutedMessages)
                         {
-                            var subscriptions = sent.Pattern == MessagingPattern.TopicFilters
+                            var routed = sent.Pattern == MessagingPattern.TopicFilters;
+                            <td class="sent-routing-properties">
+                                @if (routed)
+                                {
+                                    <dl class="mb-0">
+                                        <dt>Priority</dt>
+                                        <dd class="mb-0">
+                                            @if (sent.Priority is { } priority)
+                                            {
+                                                <code>"@priority"</code>
+                                            }
+                                            else
+                                            {
+                                                <span>Not set</span>
+                                            }
+                                        </dd>
+                                        <dt>Region</dt>
+                                        <dd class="mb-0">
+                                            @if (sent.Region is { } region)
+                                            {
+                                                <code>"@region"</code>
+                                            }
+                                            else
+                                            {
+                                                <span>Not set</span>
+                                            }
+                                        </dd>
+                                    </dl>
+                                }
+                                else
+                                {
+                                    <span>—</span>
+                                }
+                            </td>
+                            var subscriptions = routed
                                 ? string.Join(", ", reportedCards
                                     .Where(card => card.Delivery.Pattern == nameof(MessagingPattern.TopicFilters) && card.Delivery.Topic == sent.Topic)
                                     .Select(card => card.Delivery.Subscription)
@@ -466,14 +501,15 @@
         {
             var message = model.Message!.Trim();
             var pattern = model.Pattern;
-            var result = await ProducerApi.SendMessageAsync(message, pattern, pageLifetime.Token,
-                priority: model.Priority, region: model.Region);
+            var priority = pattern == MessagingPattern.TopicFilters && !string.IsNullOrEmpty(model.Priority) ? model.Priority : null;
+            var region = pattern == MessagingPattern.TopicFilters && !string.IsNullOrEmpty(model.Region) ? model.Region : null;
+            var result = await ProducerApi.SendMessageAsync(message, pattern, pageLifetime.Token, priority, region);
             if (disposed)
             {
                 return;
             }
 
-            sentMessages.Insert(0, new SentMessage(result.MessageId, pattern, result.Topic, message, DateTimeOffset.UtcNow));
+            sentMessages.Insert(0, new SentMessage(result.MessageId, pattern, result.Topic, message, DateTimeOffset.UtcNow, priority, region));
             statusMessage = $"Message {result.MessageId} published to '{result.Topic}'.";
             isError = false;
         }
@@ -505,5 +541,6 @@
 
     private sealed record DeliveryCard(long Sequence, DeliveryEvent Delivery);
     private sealed record CardInteraction(DeliveryCard Card, long Order);
-    private sealed record SentMessage(string MessageId, MessagingPattern Pattern, string Topic, string Message, DateTimeOffset SentAt);
+    private sealed record SentMessage(string MessageId, MessagingPattern Pattern, string Topic, string Message, DateTimeOffset SentAt,
+        string? Priority = null, string? Region = null);
 }
