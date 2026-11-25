@@ -90,8 +90,10 @@ public class HomeDeadLetterTests
         Assert.Single(context.JSInterop.Invocations["Blazor._internal.domWrapper.focus"]);
     }
 
-    [Fact]
-    public async Task PendingActionWarnsBeforeNavigationAndKeepsResultWhenDeclined()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PendingActionKeepsItsPanelAndWarnsBeforeNavigation(bool uncertain)
     {
         var token = TestContext.Current.CancellationToken;
         await using var context = new BunitContext();
@@ -105,6 +107,15 @@ public class HomeDeadLetterTests
         var action = home.Find("[aria-label='Resubmit sequence 7']").ClickAsync(new());
         var requestToken = await handler.Action.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5), token);
         home.WaitForAssertion(() => Assert.Single(context.JSInterop.Invocations["Blazor._internal.NavigationLock.enableNavigationPrompt"]));
+        Assert.Single(home.FindAll("#messaging-tab[aria-disabled=true]"));
+        Assert.Contains("after the dead-letter action finishes", home.Find("#home-tab-status[role=status]").TextContent);
+        var focusCalls = context.JSInterop.Invocations["Blazor._internal.domWrapper.focus"].Count;
+        await home.Find("#messaging-tab").ClickAsync(new());
+        await home.Find("[role=tablist]").TriggerEventAsync("onkeydown", new KeyboardEventArgs { Key = "Home" });
+        Assert.Equal(focusCalls, context.JSInterop.Invocations["Blazor._internal.domWrapper.focus"].Count);
+        Assert.Single(home.FindAll("#dead-letter-tab[aria-selected=true]"));
+        Assert.Single(home.FindAll("#dead-letter-panel:not([hidden])"));
+
         var warning = home.Find("#dead-letter-navigation-warning").TextContent;
         Assert.Contains("investigate", warning);
         Assert.Contains("duplicates", warning);
@@ -112,10 +123,25 @@ public class HomeDeadLetterTests
         Assert.Equal(originalUri, navigation.Uri);
         Assert.Contains(warning, Assert.IsType<string>(Assert.Single(context.JSInterop.Invocations["confirm"]).Arguments[0]));
         Assert.False(requestToken.IsCancellationRequested);
-        handler.Action.Response.SetResult(Json(new DeadLetterActionResult("copy-id")));
+        handler.Action.Response.SetResult(uncertain
+            ? new HttpResponseMessage(HttpStatusCode.BadGateway) { Content = new StringContent("Publish was not confirmed") }
+            : Json(new DeadLetterActionResult("copy-id")));
         await action;
-        Assert.Contains("Published copy copy-id", home.Find("#dead-letter-status").TextContent);
+        Assert.Single(home.FindAll("#dead-letter-panel:not([hidden])"));
+        if (uncertain)
+        {
+            var error = home.Find("#dead-letter-action-error[role=alert]").TextContent;
+            Assert.Contains("Publish was not confirmed", error);
+            Assert.Contains("duplicates", error);
+        }
+        else
+        {
+            Assert.Contains("Published copy copy-id", home.Find("#dead-letter-status[role=status]").TextContent);
+        }
         home.WaitForAssertion(() => Assert.Single(context.JSInterop.Invocations["Blazor._internal.NavigationLock.disableNavigationPrompt"]));
+        Assert.Empty(home.Find("#home-tab-status").TextContent);
+        await home.Find("[role=tablist]").TriggerEventAsync("onkeydown", new KeyboardEventArgs { Key = "Home" });
+        Assert.Single(home.FindAll("#messaging-panel:not([hidden])"));
     }
 
     [Fact]

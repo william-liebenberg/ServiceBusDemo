@@ -111,14 +111,14 @@ public partial class Home
 
     private async Task SendBurstAsync()
     {
-        if (disposed || Busy || IsTopicFilters)
+        if (disposed || DeadLetterActive || Busy || IsTopicFilters)
         {
             return;
         }
 
         statusMessage = null;
         var messageValid = await messageContext.ValidateAsync();
-        if (disposed || Busy || IsTopicFilters)
+        if (disposed || DeadLetterActive || Busy || IsTopicFilters)
         {
             return;
         }

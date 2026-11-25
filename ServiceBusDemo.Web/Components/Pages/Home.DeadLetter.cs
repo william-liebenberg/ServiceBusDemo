@@ -28,14 +28,20 @@ public partial class Home
     private ElementReference purgeCancel;
     private bool focusPurgeCancel;
     private bool DeadLetterActive => deadLetterSession is not null;
+    private bool TabSwitchBlocked => deadLetterActing || burstDelay is not null;
 
     private async Task OpenDeadLettersAsync()
     {
-        if (disposed || DeadLetterActive) return;
+        if (disposed || DeadLetterActive || TabSwitchBlocked) return;
         deadLetterSession = CancellationTokenSource.CreateLinkedTokenSource(pageLifetime.Token);
         var token = deadLetterSession.Token;
         _ = PollDeadLettersAsync(token);
         await RefreshDeadLettersAsync();
+    }
+
+    private void SwitchToMessaging()
+    {
+        if (DeadLetterActive && !TabSwitchBlocked) CloseDeadLetters();
     }
 
     private void CloseDeadLetters()
@@ -52,17 +58,17 @@ public partial class Home
 
     private async Task NavigateHomeTabsAsync(KeyboardEventArgs args)
     {
-        if (args.Key is not ("ArrowLeft" or "ArrowRight" or "Home" or "End")) return;
+        if (disposed || TabSwitchBlocked || args.Key is not ("ArrowLeft" or "ArrowRight" or "Home" or "End")) return;
         var open = args.Key == "End" || (args.Key != "Home" && !DeadLetterActive);
         if (open)
         {
-            await deadLetterTab.FocusAsync();
+            focusAfterRender = (deadLetterTab, false);
             await OpenDeadLettersAsync();
         }
         else
         {
-            await messagingTab.FocusAsync();
-            CloseDeadLetters();
+            focusAfterRender = (messagingTab, false);
+            SwitchToMessaging();
         }
     }
 

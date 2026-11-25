@@ -37,13 +37,18 @@
 <h1>Service Bus Demo</h1>
 
 <div class="nav nav-tabs mb-3" role="tablist" aria-label="Service Bus demo views" @onkeydown="NavigateHomeTabsAsync">
-    <button type="button" class="nav-link @(!DeadLetterActive ? "active" : null)" id="messaging-tab" role="tab"
+    <button type="button" class="nav-link @(!DeadLetterActive ? "active" : TabSwitchBlocked ? "disabled" : null)" id="messaging-tab" role="tab"
             aria-controls="messaging-panel" aria-selected="@(!DeadLetterActive ? "true" : "false")"
-            tabindex="@(!DeadLetterActive ? 0 : -1)" @ref="messagingTab" @onclick="CloseDeadLetters">Messaging</button>
-    <button type="button" class="nav-link @(DeadLetterActive ? "active" : null)" id="dead-letter-tab" role="tab"
+            aria-disabled="@(DeadLetterActive && TabSwitchBlocked ? "true" : null)"
+            tabindex="@(!DeadLetterActive ? 0 : -1)" @ref="messagingTab" @onclick="SwitchToMessaging">Messaging</button>
+    <button type="button" class="nav-link @(DeadLetterActive ? "active" : TabSwitchBlocked ? "disabled" : null)" id="dead-letter-tab" role="tab"
             aria-controls="dead-letter-panel" aria-selected="@(DeadLetterActive ? "true" : "false")"
+            aria-disabled="@(!DeadLetterActive && TabSwitchBlocked ? "true" : null)"
             tabindex="@(DeadLetterActive ? 0 : -1)" @ref="deadLetterTab" @onclick="OpenDeadLettersAsync">Dead-letter</button>
 </div>
+<div id="home-tab-status" class="@(TabSwitchBlocked ? "text-body-secondary mb-3" : null)" role="status" aria-atomic="true">@(
+    deadLetterActing ? "Switch tabs after the dead-letter action finishes." :
+    burstDelay is not null ? "Switch tabs after the burst finishes or is cancelled." : null)</div>
 
 <section id="dead-letter-panel" role="tabpanel" aria-labelledby="dead-letter-tab" tabindex="0" hidden="@(!DeadLetterActive)">
     @if (DeadLetterActive)
