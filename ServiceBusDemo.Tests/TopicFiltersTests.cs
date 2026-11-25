@@ -65,6 +65,8 @@ public class TopicFiltersTests
         home.Find("#message").Change("Order placed");
         home.Find("#route-priority").Change("High");
         home.Find("#route-region").Change("EU");
+        home.Find("#advanced-subject").Input("Orders");
+        home.Find("#advanced-region").Input("West");
         await home.Find("#burst-form").SubmitAsync();
         Assert.Empty(handler.Requests);
         await home.Find("form").SubmitAsync();
@@ -72,6 +74,8 @@ public class TopicFiltersTests
         Assert.Equal("/routedMessage", request.Path);
         Assert.Equal("High", (string?)request.Body["priority"]);
         Assert.Equal("EU", (string?)request.Body["region"]);
+        Assert.Equal("Orders", (string?)request.Body["subject"]);
+        Assert.Equal("West", (string?)request.Body["applicationProperties"]?["Region"]);
 
         string Subscriptions() => home.Find(".reported-subscriptions").TextContent;
         Assert.Equal("None reported", Subscriptions());
