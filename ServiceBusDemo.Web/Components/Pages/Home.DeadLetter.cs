@@ -5,6 +5,9 @@ namespace ServiceBusDemo.Web.Components.Pages;
 
 public partial class Home
 {
+    private const string DeadLetterRecoveryGuidance = "Refresh the subscription and investigate whether a copy was published or processed before retrying. Retrying a resubmit can create duplicates, even if the original is still listed.";
+    private const string DeadLetterNavigationWarning = "Leaving or reloading during a dead-letter action can lose its result. The action may already have changed the broker. " + DeadLetterRecoveryGuidance;
+
     private CancellationTokenSource? deadLetterSession;
     private DeadLetterSubscription[] deadLetterSubscriptions = [];
     private DeadLetterSubscription? deadLetterSelection;
@@ -17,8 +20,13 @@ public partial class Home
     private string? deadLetterLoadError;
     private string? deadLetterActionError;
     private string? deadLetterActionStatus;
+    private (DeadLetterSubscription Pair, long Sequence)? pendingPurge;
+    private (DeadLetterSubscription Pair, long Sequence)? focusedDeadLetter;
     private ElementReference messagingTab;
     private ElementReference deadLetterTab;
+    private ElementReference deadLetterResult;
+    private ElementReference purgeCancel;
+    private bool focusPurgeCancel;
     private bool DeadLetterActive => deadLetterSession is not null;
 
     private async Task OpenDeadLettersAsync()
@@ -36,6 +44,8 @@ public partial class Home
         deadLetterSession = null;
         deadLetterVersion++;
         deadLetterLoading = false;
+        pendingPurge = focusedDeadLetter = null;
+        focusPurgeCancel = false;
         session?.Cancel();
         session?.Dispose();
     }
@@ -83,6 +93,7 @@ public partial class Home
         deadLetterHistory.Clear();
         deadLetterCursor = null;
         deadLetterPage = null;
+        pendingPurge = focusedDeadLetter = null;
         deadLetterActionStatus = deadLetterActionError = null;
         await RefreshDeadLettersAsync();
     }
@@ -102,6 +113,7 @@ public partial class Home
         else return;
 
         deadLetterPage = null;
+        pendingPurge = focusedDeadLetter = null;
         await RefreshDeadLettersAsync();
     }
 
@@ -127,6 +139,13 @@ public partial class Home
             var page = await ProducerApi.PeekDeadLettersAsync(pair, deadLetterCursor, token);
             if (!IsCurrent()) return;
             deadLetterPage = page;
+            if (pendingPurge is { } purge && !IsVisible(purge.Pair, purge.Sequence))
+                pendingPurge = null;
+            if (focusedDeadLetter is { } focused && !IsVisible(focused.Pair, focused.Sequence))
+            {
+                focusedDeadLetter = null;
+                focusAfterRender = (deadLetterResult, false);
+            }
             deadLetterLoadError = null;
         }
         catch (Exception ex)
@@ -141,15 +160,41 @@ public partial class Home
         bool IsCurrent() => !disposed && !token.IsCancellationRequested && version == deadLetterVersion;
     }
 
+    private bool IsVisible(DeadLetterSubscription pair, long sequence) => pair == deadLetterSelection &&
+        deadLetterPage?.Messages.Any(message => message.SequenceNumber == sequence) == true;
+
+    private void BeginPurge(DeadLetterSubscription pair, long sequence)
+    {
+        if (disposed || !DeadLetterActive || deadLetterActing || !IsVisible(pair, sequence)) return;
+        pendingPurge = (pair, sequence);
+        focusPurgeCancel = true;
+    }
+
+    private void CancelPurge()
+    {
+        pendingPurge = null;
+        focusAfterRender = (deadLetterResult, false);
+    }
+
+    private Task ConfirmPurgeAsync() => pendingPurge is { } target
+        ? ActOnDeadLetterAsync(target.Pair, target.Sequence, resubmit: false) : Task.CompletedTask;
+
+    private void DeadLetterBlurred(DeadLetterSubscription pair, long sequence)
+    {
+        if (focusedDeadLetter == (pair, sequence)) focusedDeadLetter = null;
+    }
+
     private async Task ActOnDeadLetterAsync(DeadLetterSubscription pair, long sequence, bool resubmit)
     {
-        if (disposed || !DeadLetterActive || deadLetterActing || pair != deadLetterSelection
-            || deadLetterPage?.Messages.Any(message => message.SequenceNumber == sequence) != true) return;
+        if (disposed || !DeadLetterActive || deadLetterActing || !IsVisible(pair, sequence)) return;
         deadLetterVersion++;
         deadLetterLoading = false;
         deadLetterActing = true;
+        pendingPurge = focusedDeadLetter = null;
         deadLetterActionError = null;
         deadLetterActionStatus = resubmit ? "Resubmitting…" : "Purging…";
+        // The initiating control may disappear. Keep focus on the outcome region throughout the request.
+        focusAfterRender = (deadLetterResult, false);
         try
         {
             var result = resubmit
@@ -167,7 +212,7 @@ public partial class Home
             deadLetterActionStatus = null;
             deadLetterActionError = ex is HttpRequestException { StatusCode: System.Net.HttpStatusCode.BadRequest or System.Net.HttpStatusCode.Conflict }
                 ? ex.Message
-                : $"Action could not be confirmed. Refresh before retrying.{(resubmit ? " Retrying a resubmit can produce duplicates." : "")} {ex.Message}";
+                : $"Action could not be confirmed. {DeadLetterRecoveryGuidance} {ex.Message}";
         }
         finally
         {

@@ -1,17 +1,20 @@
 using System.Text.Json.Serialization;
 using Azure.Messaging.ServiceBus;
-using Microsoft.Extensions.Azure;
 using ServiceBusDemo.Producer;
 using ServiceBusDemo.ServiceDefaults;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.AddServiceDefaults();
-builder.AddAzureServiceBusClient("messaging", null, client => client.ConfigureOptions(options =>
+builder.AddAzureServiceBusClient(connectionName: "messaging");
+// An unacknowledged recovery send or settlement must not be replayed automatically.
+builder.Services.AddKeyedSingleton(DeadLetterService.ClientKey, (sp, _) =>
 {
-    // An unacknowledged send or settlement must not be replayed automatically.
-    options.RetryOptions.MaxRetries = 0;
-}));
+    var connectionString = sp.GetRequiredService<IConfiguration>().GetConnectionString("messaging")
+        ?? throw new InvalidOperationException("Dead-letter recovery requires the 'messaging' connection string.");
+    return new ServiceBusClient(connectionString,
+        new ServiceBusClientOptions { RetryOptions = new ServiceBusRetryOptions { MaxRetries = 0 } });
+});
 builder.Services.AddSingleton<DeadLetterService>();
 
 var topicName = builder.Configuration["ServiceBus:TopicName"] ?? "business-events";
@@ -21,6 +24,13 @@ var routedTopicName = builder.Configuration["ServiceBus:RoutedTopicName"] ?? "ro
 builder.Services.AddKeyedSingleton(SenderKeys.BusinessEvents, (sp, _) => sp.GetRequiredService<ServiceBusClient>().CreateSender(topicName));
 builder.Services.AddKeyedSingleton(SenderKeys.BroadcastEvents, (sp, _) => sp.GetRequiredService<ServiceBusClient>().CreateSender(broadcastTopicName));
 builder.Services.AddKeyedSingleton(SenderKeys.RoutedEvents, (sp, _) => sp.GetRequiredService<ServiceBusClient>().CreateSender(routedTopicName));
+RegisterRecoverySender(SenderKeys.BusinessEvents, topicName);
+RegisterRecoverySender(SenderKeys.BroadcastEvents, broadcastTopicName);
+RegisterRecoverySender(SenderKeys.RoutedEvents, routedTopicName);
+
+void RegisterRecoverySender(string key, string topic) =>
+    builder.Services.AddKeyedSingleton((DeadLetterService.ClientKey, key), (sp, _) =>
+        sp.GetRequiredKeyedService<ServiceBusClient>(DeadLetterService.ClientKey).CreateSender(topic));
 
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
 builder.Services.AddOpenApi();

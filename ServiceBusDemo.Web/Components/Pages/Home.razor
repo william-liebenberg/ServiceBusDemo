@@ -25,9 +25,13 @@
 
 <PageTitle>Service Bus Demo</PageTitle>
 
-@if (burstDelay is not null)
+@if (burstDelay is not null || deadLetterActing)
 {
-    <NavigationLock ConfirmExternalNavigation="true" OnBeforeInternalNavigation="ConfirmBurstNavigationAsync" />
+    <NavigationLock ConfirmExternalNavigation="true" OnBeforeInternalNavigation="ConfirmHomeNavigationAsync" />
+}
+@if (deadLetterActing)
+{
+    <p id="dead-letter-navigation-warning" class="text-warning-emphasis" role="status">@DeadLetterNavigationWarning</p>
 }
 
 <h1>Service Bus Demo</h1>
@@ -45,11 +49,11 @@
     @if (DeadLetterActive)
     {
         <h2 class="h5">Dead-letter messages</h2>
-        <p id="dead-letter-help">Viewing only peeks at a page of messages, not a broker count. The current page refreshes every two seconds.</p>
+        <p id="dead-letter-help">Viewing only peeks at a page of messages, not a broker count. The current page refreshes every two seconds. Next page may be empty.</p>
         <p>Resubmit removes the <code>always-fail</code> property and publishes to the original topic. Other matching subscriptions can receive a copy,
             and retained <code>fail-first-count</code> or other properties can cause another failure. A successful publish does not prove processing,
             and a missing delivery report does not prove that processing failed. Purge removes only the selected original without republishing.</p>
-        <p>Actions can temporarily lock other dead letters and affect their delivery counts. If an outcome is uncertain, refresh before retrying to avoid duplicates.</p>
+        <p>Actions can temporarily lock other dead letters and affect their delivery counts. If you lost the result or the outcome is uncertain, @DeadLetterRecoveryGuidance</p>
         <div class="d-flex flex-wrap align-items-end gap-2 mb-2">
             <div>
                 <label for="dead-letter-subscription" class="form-label">Topic / subscription</label>
@@ -66,6 +70,7 @@
                     @onclick="RefreshDeadLettersAsync">Refresh</button>
         </div>
         <div id="dead-letter-load-error" role="alert" class="text-danger-emphasis">@deadLetterLoadError</div>
+        <div tabindex="-1" @ref="deadLetterResult" role="group" aria-label="Dead-letter results">
         <div id="dead-letter-action-error" role="alert" class="text-danger-emphasis">@deadLetterActionError</div>
         <div id="dead-letter-status" role="status" aria-atomic="true">
             @if (deadLetterActionStatus is not null) { <p class="mb-1">@deadLetterActionStatus</p> }
@@ -73,11 +78,14 @@
             else if (deadLetterLoadError is null && deadLetterPage?.Messages.Length == 0) { <p>No dead letters on this page.</p> }
             else if (deadLetterLoadError is null && !deadLetterLoading && deadLetterSelection is null) { <p>No subscriptions configured.</p> }
         </div>
+        </div>
         @if (deadLetterPage is { } page && deadLetterSelection is { } selection)
         {
             @foreach (var message in page.Messages)
             {
-                <article class="dead-letter-card mb-2" @key="(selection, message.SequenceNumber)" aria-labelledby="@($"dead-letter-{message.SequenceNumber}")">
+                <article class="dead-letter-card mb-2" @key="(selection, message.SequenceNumber)" aria-labelledby="@($"dead-letter-{message.SequenceNumber}")"
+                         @onfocusin="() => focusedDeadLetter = (selection, message.SequenceNumber)"
+                         @onfocusout="() => DeadLetterBlurred(selection, message.SequenceNumber)">
                     <h3 class="h6" id="@($"dead-letter-{message.SequenceNumber}")">Sequence @message.SequenceNumber</h3>
                     <dl class="mb-2">
                         <dt>Message ID</dt><dd><code>@message.MessageId</code></dd>
@@ -103,8 +111,17 @@
                         <button type="button" class="btn btn-outline-primary" disabled="@deadLetterActing" aria-label="Resubmit sequence @message.SequenceNumber"
                                 @onclick="() => ActOnDeadLetterAsync(selection, message.SequenceNumber, true)">Resubmit</button>
                         <button type="button" class="btn btn-outline-danger" disabled="@deadLetterActing" aria-label="Purge sequence @message.SequenceNumber"
-                                @onclick="() => ActOnDeadLetterAsync(selection, message.SequenceNumber, false)">Purge</button>
+                                @onclick="() => BeginPurge(selection, message.SequenceNumber)">Purge</button>
                     </div>
+                    @if (pendingPurge == (selection, message.SequenceNumber))
+                    {
+                        <fieldset class="mt-2" id="dead-letter-purge-confirmation">
+                            <legend class="h6">Permanently purge sequence @message.SequenceNumber from @selection.Topic / @selection.Subscription?</legend>
+                            <p id="dead-letter-purge-note">This cannot be undone. No copy will be published.</p>
+                            <button type="button" class="btn btn-outline-secondary" @ref="purgeCancel" @onclick="CancelPurge">Cancel</button>
+                            <button type="button" class="btn btn-danger" aria-describedby="dead-letter-purge-note" @onclick="ConfirmPurgeAsync">Confirm purge</button>
+                        </fieldset>
+                    }
                 </article>
             }
         }

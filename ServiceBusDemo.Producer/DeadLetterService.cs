@@ -9,8 +9,10 @@ public sealed record DeadLetterEntry(long SequenceNumber, string MessageId, stri
 public sealed record DeadLetterPage(DeadLetterEntry[] Messages, long? NextFromSequenceNumber);
 public sealed record DeadLetterActionResult(string? PublishedMessageId);
 
-public sealed class DeadLetterService(ServiceBusClient bus, ILogger<DeadLetterService> logger)
+public sealed class DeadLetterService([FromKeyedServices(DeadLetterService.ClientKey)] ServiceBusClient bus,
+    ILogger<DeadLetterService> logger)
 {
+    public const string ClientKey = "dead-letter-recovery";
     public const int PageSize = 20;
     private const int BatchSize = 10;
     private const int MaxBatches = 5;
@@ -21,13 +23,16 @@ public sealed class DeadLetterService(ServiceBusClient bus, ILogger<DeadLetterSe
         try
         {
             await using var receiver = CreateReceiver(pair);
-            var entries = await receiver.PeekMessagesAsync(PageSize + 1, fromSequenceNumber ?? 0, token);
-            return Results.Ok(new DeadLetterPage(entries.Take(PageSize).Select(message => new DeadLetterEntry(
+            var entries = await receiver.PeekMessagesAsync(PageSize, fromSequenceNumber ?? 0, token);
+            // The broker can return fewer than requested even when more messages exist.
+            long? next = entries.Count > 0 && entries[^1].SequenceNumber < long.MaxValue
+                ? entries[^1].SequenceNumber + 1 : null;
+            return Results.Ok(new DeadLetterPage(entries.Select(message => new DeadLetterEntry(
                 message.SequenceNumber, message.MessageId, message.DeadLetterReason, message.DeadLetterErrorDescription,
                 message.Body.ToString(), message.ApplicationProperties.ToDictionary(p => p.Key,
                     p => Convert.ToString(p.Value, System.Globalization.CultureInfo.InvariantCulture) ?? ""),
                 message.DeliveryCount)).ToArray(),
-                entries.Count > PageSize ? entries[PageSize].SequenceNumber : null));
+                next));
         }
         catch (Exception ex) when (!token.IsCancellationRequested)
         {

@@ -39,12 +39,31 @@ public class ProducerDeadLetterTests
         Assert.Equal(20, first.Messages.Length);
         Assert.Equal(first.Messages.Select(message => message.SequenceNumber), repeated.Messages.Select(message => message.SequenceNumber));
         Assert.Equal(new long[] { 42, 44, 46, 48 }, next.Messages.Select(message => message.SequenceNumber));
-        Assert.Null(next.NextFromSequenceNumber);
+        Assert.Equal(49L, next.NextFromSequenceNumber);
         var item = first.Messages[0];
         Assert.Equal(("same-id", "poison", "description", "body", 5),
             (item.MessageId, item.DeadLetterReason, item.DeadLetterErrorDescription, item.Body, item.DeliveryCount));
         Assert.Equal("High", item.ApplicationProperties["Priority"]);
-        Assert.Equal(new[] { "peek:21:0", "dispose", "peek:21:0", "dispose", "peek:21:42", "dispose" }, broker.Calls);
+        Assert.Equal(new[] { "peek:20:0", "dispose", "peek:20:0", "dispose", "peek:20:41", "dispose" }, broker.Calls);
+    }
+
+    [Fact]
+    public async Task ShortBrokerPageOffersContinuationUntilAnEmptyPeek()
+    {
+        var token = TestContext.Current.CancellationToken;
+        var broker = new Broker { Entries = [Entry(7), Entry(42)], PeekLimit = 1 };
+        await using var factory = CreateFactory(broker);
+        using var http = factory.CreateClient(new() { BaseAddress = new Uri("https://localhost") });
+
+        var first = (await http.GetFromJsonAsync<DeadLetterPage>(Messages + Query, token))!;
+        Assert.Equal(7L, Assert.Single(first.Messages).SequenceNumber);
+        Assert.Equal(8L, first.NextFromSequenceNumber);
+        var next = (await http.GetFromJsonAsync<DeadLetterPage>(Messages + Query + $"&fromSequenceNumber={first.NextFromSequenceNumber}", token))!;
+        Assert.Equal(42L, Assert.Single(next.Messages).SequenceNumber);
+        var end = (await http.GetFromJsonAsync<DeadLetterPage>(Messages + Query + $"&fromSequenceNumber={next.NextFromSequenceNumber}", token))!;
+        Assert.Empty(end.Messages);
+        Assert.Null(end.NextFromSequenceNumber);
+        Assert.Equal(new[] { "peek:20:0", "dispose", "peek:20:8", "dispose", "peek:20:43", "dispose" }, broker.Calls);
     }
 
     [Theory]
@@ -120,8 +139,8 @@ public class ProducerDeadLetterTests
             builder.UseSetting("ServiceBus:HighPrioritySubscriptionName", "priority-custom");
             builder.ConfigureServices(services =>
             {
-                services.AddSingleton<ServiceBusClient>(broker);
-                services.AddKeyedSingleton<ServiceBusSender>("routed-events", new Sender(broker));
+                services.AddKeyedSingleton<ServiceBusClient>(DeadLetterService.ClientKey, broker);
+                services.AddKeyedSingleton<ServiceBusSender>((DeadLetterService.ClientKey, "routed-events"), new Sender(broker));
             });
         });
 
@@ -130,6 +149,7 @@ public class ProducerDeadLetterTests
         public List<string> Calls { get; } = [];
         public Queue<ServiceBusReceivedMessage[]> Batches { get; } = new();
         public ServiceBusReceivedMessage[] Entries = [];
+        public int PeekLimit { get; init; } = int.MaxValue;
         public string? Failure { get; init; }
         public ServiceBusMessage? Copy;
         public override ServiceBusReceiver CreateReceiver(string topicName, string subscriptionName, ServiceBusReceiverOptions options)
@@ -157,7 +177,8 @@ public class ProducerDeadLetterTests
             CancellationToken cancellationToken = default)
         {
             broker.Calls.Add($"peek:{maxMessages}:{fromSequenceNumber}");
-            return Task.FromResult<IReadOnlyList<ServiceBusReceivedMessage>>(broker.Entries.Where(e => e.SequenceNumber >= fromSequenceNumber).Take(maxMessages).ToArray());
+            return Task.FromResult<IReadOnlyList<ServiceBusReceivedMessage>>(broker.Entries
+                .Where(e => e.SequenceNumber >= fromSequenceNumber).Take(Math.Min(maxMessages, broker.PeekLimit)).ToArray());
         }
         public override Task<IReadOnlyList<ServiceBusReceivedMessage>> ReceiveMessagesAsync(int maxMessages, TimeSpan? maxWaitTime = null,
             CancellationToken cancellationToken = default)

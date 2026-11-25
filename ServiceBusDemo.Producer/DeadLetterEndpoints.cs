@@ -32,7 +32,7 @@ internal static class DeadLetterEndpoints
             var pair = new DeadLetterSubscription(topic, subscription);
             var key = topology.FirstOrDefault(entry => entry.Pair == pair).SenderKey;
             return key is null ? Task.FromResult(UnknownPair()) : service.ActAsync(pair, sequenceNumber,
-                context.RequestServices.GetRequiredKeyedService<ServiceBusSender>(key), token);
+                context.RequestServices.GetRequiredKeyedService<ServiceBusSender>((DeadLetterService.ClientKey, key)), token);
         });
         endpoints.MapPost("/messages/{sequenceNumber:long}/purge", (string topic, string subscription,
             long sequenceNumber, DeadLetterService service, CancellationToken token) =>

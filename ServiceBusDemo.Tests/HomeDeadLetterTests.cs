@@ -1,5 +1,7 @@
 using System.Net.Http.Json;
 using Bunit;
+using Microsoft.AspNetCore.Components;
+using Microsoft.AspNetCore.Components.Web;
 using ServiceBusDemo.Web;
 using ServiceBusDemo.Web.Components.Pages;
 using TestContext = Xunit.TestContext;
@@ -40,6 +42,13 @@ public class HomeDeadLetterTests
         Assert.StartsWith("GET /dead-letters/messages?", handler.Requests.Last());
         Assert.Contains("Published copy copy-id", home.Find("#dead-letter-status[role=status]").TextContent);
         await home.Find("[aria-label='Purge sequence 7']").ClickAsync(new());
+        var confirmation = home.Find("#dead-letter-purge-confirmation");
+        Assert.Contains("Permanently purge sequence 7 from routed-events / eu-orders?", confirmation.TextContent);
+        Assert.DoesNotContain(handler.Requests, request => request.StartsWith("POST /dead-letters/messages/7/purge"));
+        confirmation.QuerySelector("button")!.Click();
+        Assert.Empty(home.FindAll("#dead-letter-purge-confirmation"));
+        await home.Find("[aria-label='Purge sequence 7']").ClickAsync(new());
+        await home.Find("#dead-letter-purge-confirmation button.btn-danger").ClickAsync(new());
         Assert.Contains(handler.Requests, request => request.StartsWith("POST /dead-letters/messages/7/purge"));
         Assert.Contains("Purge was not confirmed", home.Find("#dead-letter-action-error[role=alert]").TextContent);
         handler.PeekError = true;
@@ -78,6 +87,52 @@ public class HomeDeadLetterTests
         await refresh;
         Assert.Empty(home.FindAll(".dead-letter-card"));
         Assert.Contains("No dead letters", home.Find("#dead-letter-status").TextContent);
+        Assert.Single(context.JSInterop.Invocations["Blazor._internal.domWrapper.focus"]);
+    }
+
+    [Fact]
+    public async Task PendingActionWarnsBeforeNavigationAndKeepsResultWhenDeclined()
+    {
+        var token = TestContext.Current.CancellationToken;
+        await using var context = new BunitContext();
+        using var handler = new Handler { Action = new PendingPeek() };
+        using var client = Client(context, handler);
+        var navigation = context.Services.GetRequiredService<NavigationManager>();
+        var originalUri = navigation.Uri;
+        context.JSInterop.Setup<bool>("confirm", _ => true).SetResult(false);
+        var home = context.Render<Home>();
+        await home.Find("#dead-letter-tab").ClickAsync(new());
+        var action = home.Find("[aria-label='Resubmit sequence 7']").ClickAsync(new());
+        var requestToken = await handler.Action.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5), token);
+        home.WaitForAssertion(() => Assert.Single(context.JSInterop.Invocations["Blazor._internal.NavigationLock.enableNavigationPrompt"]));
+        var warning = home.Find("#dead-letter-navigation-warning").TextContent;
+        Assert.Contains("investigate", warning);
+        Assert.Contains("duplicates", warning);
+        await home.InvokeAsync(() => navigation.NavigateTo("/Error"));
+        Assert.Equal(originalUri, navigation.Uri);
+        Assert.Contains(warning, Assert.IsType<string>(Assert.Single(context.JSInterop.Invocations["confirm"]).Arguments[0]));
+        Assert.False(requestToken.IsCancellationRequested);
+        handler.Action.Response.SetResult(Json(new DeadLetterActionResult("copy-id")));
+        await action;
+        Assert.Contains("Published copy copy-id", home.Find("#dead-letter-status").TextContent);
+        home.WaitForAssertion(() => Assert.Single(context.JSInterop.Invocations["Blazor._internal.NavigationLock.disableNavigationPrompt"]));
+    }
+
+    [Fact]
+    public async Task PollMovesFocusToResultsWhenFocusedCardDisappears()
+    {
+        await using var context = new BunitContext();
+        using var handler = new Handler();
+        using var client = Client(context, handler);
+        var home = context.Render<Home>();
+        await home.Find("#dead-letter-tab").ClickAsync(new());
+        await home.Find(".dead-letter-card").TriggerEventAsync("onfocusin", new FocusEventArgs());
+        handler.EmptyPage = true;
+        home.WaitForAssertion(() =>
+        {
+            Assert.Empty(home.FindAll(".dead-letter-card"));
+            Assert.Single(context.JSInterop.Invocations["Blazor._internal.domWrapper.focus"]);
+        }, TimeSpan.FromSeconds(5));
     }
 
     [Fact]
@@ -124,6 +179,7 @@ public class HomeDeadLetterTests
         public System.Collections.Concurrent.ConcurrentQueue<string> Requests { get; } = new();
         public bool PeekError { get; set; }
         public bool EmptyPage { get; set; }
+        public PendingPeek? Action { get; init; }
         public PendingPeek HoldNextPeek()
         {
             var peek = new PendingPeek();
@@ -136,7 +192,16 @@ public class HomeDeadLetterTests
             var path = request.RequestUri!.AbsolutePath;
             Requests.Enqueue($"{request.Method} {request.RequestUri.PathAndQuery}");
             if (path.EndsWith("/subscriptions")) return Task.FromResult(Json(Pairs));
-            if (path.EndsWith("/resubmit")) return Task.FromResult(Json(new DeadLetterActionResult("copy-id")));
+            if (path.EndsWith("/resubmit"))
+            {
+                if (Action is { } action)
+                {
+                    action.Entered.SetResult(cancellationToken);
+                    return action.Response.Task;
+                }
+
+                return Task.FromResult(Json(new DeadLetterActionResult("copy-id")));
+            }
             if (path.EndsWith("/purge")) return Task.FromResult(new HttpResponseMessage(HttpStatusCode.BadGateway) { Content = new StringContent("Purge was not confirmed") });
             if (Interlocked.Exchange(ref pending, null) is { } peek)
             {
