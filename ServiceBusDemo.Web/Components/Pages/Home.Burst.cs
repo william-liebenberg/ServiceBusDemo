@@ -126,6 +126,10 @@ public partial class Home
             {
                 focusAfterRender = (field, false);
             }
+            else if (request is null)
+            {
+                FocusInvalidFailureOption();
+            }
             return;
         }
 

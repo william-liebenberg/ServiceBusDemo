@@ -84,9 +84,11 @@ public class WebTests
 
         await using var app = await appHost.BuildAsync(token);
         await app.StartAsync(token);
+        var runningConsumers = new Dictionary<string, string>();
         foreach (var resource in new[] { "webfrontend", "consumer-one", "consumer-two" })
         {
-            await app.ResourceNotifications.WaitForResourceHealthyAsync(resource, token);
+            var healthy = await app.ResourceNotifications.WaitForResourceHealthyAsync(resource, token);
+            if (resource != "webfrontend") runningConsumers.Add(resource, healthy.ResourceId);
         }
 
         using var web = app.CreateHttpClient("webfrontend", "http");
@@ -122,7 +124,8 @@ public class WebTests
         });
         var connectionString = await app.GetConnectionStringAsync("messaging", token);
         await using var bus = new ServiceBusClient(connectionString!);
-        await VerifyFailureLabAsync(producer, bus, reports, token);
+        var resourceLogs = app.Services.GetRequiredService<ResourceLoggerService>();
+        await VerifyFailureLabAsync(producer, bus, resourceLogs, runningConsumers, reports, token);
 
         var commandService = app.Services.GetRequiredService<ResourceCommandService>();
         var stop = await commandService.ExecuteCommandAsync("webfrontend", "resource-stop", token);
@@ -152,7 +155,8 @@ public class WebTests
         AssertFanout(fanoutReports.Select(report => report.Delivery));
     }
 
-    private static async Task VerifyFailureLabAsync(HttpClient producer, ServiceBusClient bus,
+    private static async Task VerifyFailureLabAsync(HttpClient producer, ServiceBusClient bus, ResourceLoggerService resourceLogs,
+        Dictionary<string, string> runningConsumers,
         ConcurrentQueue<(DeliveryEvent Delivery, HttpStatusCode Status)> reports, CancellationToken token)
     {
         foreach (var (endpoint, topic, subscriptions) in new[]
@@ -192,8 +196,11 @@ public class WebTests
         }
 
         // Each broadcast subscription has exactly one processor, so overlap proves concurrent handling there.
-        var slow = await PublishAsync(producer, "/broadcastMessage", token, new("Slow", DelaySeconds: 5));
-        await Task.Delay(TimeSpan.FromSeconds(1), token);
+        const int delaySeconds = 10;
+        var slow = await PublishAsync(producer, "/broadcastMessage", token, new("Slow", DelaySeconds: delaySeconds));
+        // Receipt is logged before the delay. Wait for both subscriptions rather than guessing when they start.
+        await Task.WhenAll(runningConsumers.Select(consumer =>
+            WaitForReceiptAsync(resourceLogs, consumer.Value, consumer.Key, slow, token)));
         var fast = await PublishAsync(producer, "/broadcastMessage", token);
         await WaitForReportsAsync(reports, slow, 2, token);
         await WaitForReportsAsync(reports, fast, 2, token);
@@ -205,9 +212,29 @@ public class WebTests
             Assert.Equal((1, DeliveryOutcomes.Completed), (delayed.DeliveryCount, delayed.Outcome));
             Assert.Equal((1, DeliveryOutcomes.Completed), (normal.DeliveryCount, normal.Outcome));
             Assert.True(delayed.InitialLockedUntil > delayed.ReceivedAt);
-            Assert.True(delayed.SettledAt - delayed.ReceivedAt >= TimeSpan.FromSeconds(4.9));
+            Assert.True(delayed.SettledAt - delayed.ReceivedAt >= TimeSpan.FromSeconds(delaySeconds - 0.1));
             Assert.InRange(normal.SettledAt, delayed.ReceivedAt, delayed.SettledAt);
         }
+    }
+
+    private static async Task WaitForReceiptAsync(ResourceLoggerService resourceLogs, string resourceId, string subscription,
+        string id, CancellationToken token)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
+        deadline.CancelAfter(TimeSpan.FromSeconds(30));
+        var receipt = $"received message {id} from broadcast-events/{subscription}:";
+        try
+        {
+            await foreach (var batch in resourceLogs.WatchAsync(resourceId).WithCancellation(deadline.Token))
+            {
+                if (batch.Any(line => line.Content.Contains(receipt, StringComparison.Ordinal)))
+                {
+                    return;
+                }
+            }
+        }
+        catch (OperationCanceledException) when (!token.IsCancellationRequested) { }
+        Assert.Fail($"No receipt log for {id} on {subscription}.");
     }
 
     private static async Task VerifyConsumerControlAsync(HttpClient producer, ConsumerOneControlClient one,

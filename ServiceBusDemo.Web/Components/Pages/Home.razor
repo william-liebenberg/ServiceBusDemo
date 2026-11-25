@@ -44,7 +44,7 @@
                 <InputRadio id="pattern-competing" class="form-check-input" Value="MessagingPattern.CompetingConsumers" />
                 <label class="form-check-label" for="pattern-competing">
                     <strong>Competing consumers</strong> &ndash; <code>business-events</code> topic, one shared subscription.
-                    Each message is handled by <em>one</em> consumer.
+                    Each delivery attempt is handled by <em>one</em> consumer, but redeliveries may reach either lane.
                 </label>
             </div>
             <div class="form-check">
@@ -78,30 +78,32 @@
             Redelivery can repeat work: at-least-once handlers must be idempotent.
         </p>
         <div class="form-check">
-            <input id="fail-first" type="checkbox" class="form-check-input" @bind="failFirst" />
+            <input id="fail-first" type="checkbox" class="form-check-input" @bind="failFirst" @bind:after="RevalidateFailFirst" />
             <label for="fail-first" class="form-check-label">Fail first N attempts</label>
         </div>
         @if (failFirst)
         {
             <label for="fail-first-count" class="form-label">Failure count (1–10)</label>
-            <input id="fail-first-count" type="number" min="1" max="10" step="1" class="form-control" @bind="failFirstCount" @bind:event="oninput"
+            <input id="fail-first-count" type="number" min="1" max="10" step="1" class="form-control" @ref="failFirstCountInput"
+                   @bind="failFirstCount" @bind:event="oninput" @bind:after="RevalidateFailFirst"
                    aria-invalid="@(failFirstError is not null ? "true" : "false")" aria-describedby="fail-first-error" />
-            <div id="fail-first-error" class="validation-message" aria-live="polite">@failFirstError</div>
+            <div id="fail-first-error" class="text-danger-emphasis" aria-live="polite">@failFirstError</div>
         }
         <div class="form-check">
             <input id="always-fail" type="checkbox" class="form-check-input" @bind="alwaysFail" />
             <label for="always-fail" class="form-check-label">Poison message (always fail)</label>
         </div>
         <div class="form-check">
-            <input id="slow-handler" type="checkbox" class="form-check-input" @bind="slowHandler" />
+            <input id="slow-handler" type="checkbox" class="form-check-input" @bind="slowHandler" @bind:after="RevalidateDelay" />
             <label for="slow-handler" class="form-check-label">Slow handler</label>
         </div>
         @if (slowHandler)
         {
             <label for="delay-seconds" class="form-label">Delay in seconds (1–120)</label>
-            <input id="delay-seconds" type="number" min="1" max="120" step="1" class="form-control" @bind="delaySeconds" @bind:event="oninput"
+            <input id="delay-seconds" type="number" min="1" max="120" step="1" class="form-control" @ref="delaySecondsInput"
+                   @bind="delaySeconds" @bind:event="oninput" @bind:after="RevalidateDelay"
                    aria-invalid="@(delaySecondsError is not null ? "true" : "false")" aria-describedby="delay-seconds-error" />
-            <div id="delay-seconds-error" class="validation-message" aria-live="polite">@delaySecondsError</div>
+            <div id="delay-seconds-error" class="text-danger-emphasis" aria-live="polite">@delaySecondsError</div>
         }
     </fieldset>
 
@@ -453,6 +455,7 @@
         var request = CreateSendRequest();
         if (request is null)
         {
+            FocusInvalidFailureOption();
             return;
         }
 
