@@ -28,6 +28,7 @@
   <ItemGroup>
     <ProjectReference Include="..\ServiceBusDemo.AppHost\ServiceBusDemo.AppHost.csproj" />
     <ProjectReference Include="..\ServiceBusDemo.Web\ServiceBusDemo.Web.csproj" />
+    <ProjectReference Include="..\ServiceBusDemo.Producer\ServiceBusDemo.Producer.csproj" />
     <ProjectReference Include="..\ServiceBusDemo.ConsumerOne\ServiceBusDemo.ConsumerOne.csproj" />
     <ProjectReference Include="..\ServiceBusDemo.ConsumerTwo\ServiceBusDemo.ConsumerTwo.csproj" />
   </ItemGroup>
