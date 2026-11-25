@@ -45,6 +45,9 @@ public enum MessagingPattern
 }
 
 public record SendMessageRequest(string Message,
+    int? FailFirstCount = null,
+    bool AlwaysFail = false,
+    int? DelaySeconds = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Subject = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? CorrelationId = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IReadOnlyDictionary<string, string>? ApplicationProperties = null,

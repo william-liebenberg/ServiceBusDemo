@@ -1,0 +1,11 @@
+{
+  "name": "servicebusdemo-browser-tests",
+  "private": true,
+  "scripts": {
+    "install-browser": "playwright install chromium",
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.61.1"
+  }
+}

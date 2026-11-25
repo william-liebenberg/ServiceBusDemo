@@ -213,7 +213,8 @@ public class TopicFiltersTests
     }
 
     private static DeliveryEvent Report(string id, string consumer, string subscription) =>
-        new(id, "TopicFilters", consumer, "routed-events", subscription, "Order placed", 1, DateTimeOffset.UnixEpoch);
+        new(id, "TopicFilters", consumer, "routed-events", subscription, "Order placed", 1, DateTimeOffset.UnixEpoch,
+            DeliveryOutcomes.Completed, DateTimeOffset.UnixEpoch.AddMinutes(1), DateTimeOffset.UnixEpoch);
 
     private static HttpClient CreateClient(RecordingHandler handler) => new(handler, disposeHandler: false)
     {

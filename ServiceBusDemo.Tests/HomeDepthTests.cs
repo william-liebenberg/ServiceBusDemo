@@ -174,7 +174,8 @@ public class HomeDepthTests
     private static void Report(DeliveryFeed feed, string id, string topic = "business-events",
         string subscription = "business-events", string consumer = "ConsumerOne") =>
         feed.Add(new DeliveryEvent(id, topic == "broadcast-events" ? "PubSub" : "CompetingConsumers", consumer,
-            topic, subscription, "Order 42", 1, DateTimeOffset.UnixEpoch));
+            topic, subscription, "Order 42", 1, DateTimeOffset.UnixEpoch, DeliveryOutcomes.Completed,
+            DateTimeOffset.UnixEpoch.AddMinutes(1), DateTimeOffset.UnixEpoch));
 
     private static HttpResponseMessage Accepted(string id, string topic) =>
         new(HttpStatusCode.Accepted) { Content = JsonContent.Create(new SendMessageResult(id, topic)) };

@@ -5,6 +5,7 @@
 @inject ProducerApiClient ProducerApi
 @inject DeliveryFeed Feed
 @inject ILogger<Home> Logger
+@inject IServiceProvider Services
 
 @{
     var snapshot = Feed.Snapshot(out var reportCount, out var clearCount);
@@ -33,7 +34,8 @@
 
 <p>Publish a message to Azure Service Bus via the producer API, choosing which messaging pattern to demonstrate.</p>
 
-<EditForm EditContext="messageContext" OnValidSubmit="SendAsync" FormName="send-message">
+@* Let Blazor show the same accessible option errors for single and burst sends. *@
+<EditForm EditContext="messageContext" OnValidSubmit="SendAsync" FormName="send-message" novalidate>
     <DataAnnotationsValidator />
     <fieldset class="mb-3" disabled="@Busy">
         <legend class="form-label fs-6">Pattern</legend>
@@ -42,7 +44,7 @@
                 <InputRadio id="pattern-competing" class="form-check-input" Value="MessagingPattern.CompetingConsumers" />
                 <label class="form-check-label" for="pattern-competing">
                     <strong>Competing consumers</strong> &ndash; <code>business-events</code> topic, one shared subscription.
-                    Each message is handled by <em>one</em> consumer.
+                    Each delivery attempt is handled by <em>one</em> consumer, but redeliveries may reach either lane.
                 </label>
             </div>
             <div class="form-check">
@@ -97,6 +99,47 @@
             <ValidationMessage For="() => model.Message" />
         </div>
     </div>
+
+    <fieldset class="mb-3" disabled="@Busy" aria-describedby="failure-lab-help">
+        <legend class="form-label fs-6">Failure lab</legend>
+        <p id="failure-lab-help" class="text-body-secondary">
+            Applies to single and burst sends. Poison overrides fail-first; the delay applies to every attempt.
+            The application dead-letters intentional failures on attempt @FailureLab.AttemptLimit or later.
+            @(EmulatorMaxDeliveryCount is int brokerLimit
+                ? $"The local emulator is configured with a broker limit of {brokerLimit}."
+                : "The broker limit is not specified here; its default or external configuration applies.")
+            External brokers must allow at least @FailureLab.AttemptLimit deliveries to see explicit dead-lettering.
+            Redelivery can repeat work: at-least-once handlers must be idempotent.
+        </p>
+        <div class="form-check">
+            <input id="fail-first" type="checkbox" class="form-check-input" @bind="failFirst" @bind:after="RevalidateFailFirst" />
+            <label for="fail-first" class="form-check-label">Fail first N attempts</label>
+        </div>
+        @if (failFirst)
+        {
+            <label for="fail-first-count" class="form-label">Failure count (1–10)</label>
+            <input id="fail-first-count" type="number" min="1" max="10" step="1" class="form-control" @ref="failFirstCountInput"
+                   @bind="failFirstCount" @bind:event="oninput" @bind:after="RevalidateFailFirst"
+                   aria-invalid="@(failFirstError is not null ? "true" : "false")" aria-describedby="fail-first-error" />
+            <div id="fail-first-error" class="text-danger-emphasis" aria-live="polite">@failFirstError</div>
+        }
+        <div class="form-check">
+            <input id="always-fail" type="checkbox" class="form-check-input" @bind="alwaysFail" />
+            <label for="always-fail" class="form-check-label">Poison message (always fail)</label>
+        </div>
+        <div class="form-check">
+            <input id="slow-handler" type="checkbox" class="form-check-input" @bind="slowHandler" @bind:after="RevalidateDelay" />
+            <label for="slow-handler" class="form-check-label">Slow handler</label>
+        </div>
+        @if (slowHandler)
+        {
+            <label for="delay-seconds" class="form-label">Delay in seconds (1–120)</label>
+            <input id="delay-seconds" type="number" min="1" max="120" step="1" class="form-control" @ref="delaySecondsInput"
+                   @bind="delaySeconds" @bind:event="oninput" @bind:after="RevalidateDelay"
+                   aria-invalid="@(delaySecondsError is not null ? "true" : "false")" aria-describedby="delay-seconds-error" />
+            <div id="delay-seconds-error" class="text-danger-emphasis" aria-live="polite">@delaySecondsError</div>
+        }
+    </fieldset>
 
     <details class="mb-3" open="@advancedOpen">
         <summary id="advanced-heading" @onclick="() => advancedOpen = !advancedOpen" @onclick:preventDefault>Advanced</summary>
@@ -270,18 +313,23 @@
     </ul>
     <p id="depth-note" class="text-body-secondary">
         Subscription depth is unavailable for Topic filters (<code>routed-events</code>).
-        Estimates above cover acknowledged sends in this page session only, not external sends. Delivery reports are best-effort,
-        arrive before broker completion, and only the latest 200 are retained. Clearing the feed or reports aging out of it
-        can increase the estimate. Reloading loses this page’s sent history.
+        Estimates above cover acknowledged sends in this page session only, not external sends. A report reduces the estimate
+        even if the attempt was abandoned and can be retried. Reports are best-effort, and only the latest 200 are retained.
+        Clearing the feed or reports aging out of it can increase the estimate. Reloading loses this page’s sent history.
+
     </p>
 </section>
 
-<section class="deliveries mt-4" aria-labelledby="deliveries-heading">
+<section class="deliveries mt-4" aria-labelledby="deliveries-heading" aria-describedby="delivery-report-help">
     <div class="d-flex align-items-center justify-content-between mb-2">
         <h2 id="deliveries-heading" class="h5 mb-0">Deliveries</h2>
         <button type="button" class="btn btn-outline-secondary btn-sm" @onclick="Feed.Clear">Clear</button>
     </div>
+    <p id="delivery-report-help" class="text-body-secondary">Cards appear only after an attempt is settled, so a slow attempt won't appear while its delay is still running.
+        Reports can be lost; a missing card doesn't mean settlement failed.</p>
     <p class="text-body-secondary">Only recent reports are shown, across all tabs. Clear removes shared reports, not sent history or burst statistics.</p>
+    <p class="text-body-secondary">Automatic lock renewal can extend a message's lock past the initial expiration shown on its card.
+        A long handler delay does not guarantee lock expiry.</p>
     <div id="delivery-status" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true">
         <span @key="deliveryStatusVersion">@deliveryStatus</span>
     </div>
@@ -318,6 +366,8 @@
                     var matchDescriptionId = $"delivery-matches-{card.Sequence}";
                     var isHighlighted = active is not null && delivery.MessageId == highlightedId;
                     var receivedAt = delivery.ReceivedAt.ToLocalTime();
+                    var initialLock = delivery.InitialLockedUntil.ToLocalTime();
+                    var settledAt = delivery.SettledAt.ToLocalTime();
                     var patternClass = delivery.Pattern switch
                     {
                         nameof(MessagingPattern.CompetingConsumers) => "pattern-competing",
@@ -341,7 +391,17 @@
                             <dt>Body</dt>
                             <dd class="delivery-body">@delivery.Body</dd>
                             <dt>Received (local time)</dt>
-                            <dd class="mb-0"><time datetime="@receivedAt.ToString("O")">@receivedAt.ToString("G") (UTC@(receivedAt.ToString("zzz")))</time></dd>
+                            <dd><time datetime="@receivedAt.ToString("O")">@LocalTimeLabel(receivedAt)</time></dd>
+                            <dt>Delivery count</dt>
+                            <dd>@delivery.DeliveryCount</dd>
+                            <dt>Outcome</dt>
+                            <dd>@delivery.Outcome</dd>
+                            <dt>Initial lock expiration (local time)</dt>
+                            <dd><time datetime="@initialLock.ToString("O")">@LocalTimeLabel(initialLock)</time></dd>
+                            <dt>Settled (local time)</dt>
+                            <dd><time datetime="@settledAt.ToString("O")">@LocalTimeLabel(settledAt)</time></dd>
+                            <dt>Elapsed handling time</dt>
+                            <dd class="mb-0">@((delivery.SettledAt - delivery.ReceivedAt).TotalSeconds.ToString("0.000")) s</dd>
                         </dl>
                         <MessageMetadata Subject="@delivery.Subject" CorrelationId="@delivery.CorrelationId" ApplicationProperties="delivery.ApplicationProperties" />
                     </article>
@@ -589,10 +649,17 @@
         }
 
         statusMessage = null;
-        var request = SnapshotRequest(model.Message!.Trim());
+        var request = CreateCompleteSendRequest(model.Message!.Trim());
         if (request is null)
         {
-            FocusMetadataErrors();
+            if (metadataErrors.Count > 0)
+            {
+                FocusMetadataErrors();
+            }
+            else
+            {
+                FocusInvalidFailureOption();
+            }
             return;
         }
 

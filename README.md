@@ -141,16 +141,13 @@ The Producer API exposes this route as `/broadcastMessage`. Each consumer starts
 ```csharp
 var processor = client.CreateProcessor(topic, subscription, new ServiceBusProcessorOptions
 {
-    AutoCompleteMessages = true,
-    MaxConcurrentCalls = 1
+    AutoCompleteMessages = false,
+    MaxConcurrentCalls = 2
 });
 
+// Normal-path example. The failure lab can also abandon or dead-letter.
 processor.ProcessMessageAsync += args =>
-{
-    logger.LogInformation("[{Pattern}] {Consumer} received {MessageId} from {Topic}/{Subscription}",
-        pattern, ConsumerName, args.Message.MessageId, topic, subscription);
-    return Task.CompletedTask;
-};
+    args.CompleteMessageAsync(args.Message, args.CancellationToken);
 
 await processor.StartProcessingAsync(stoppingToken);
 ```
@@ -205,11 +202,21 @@ For any pattern, use **Advanced** to set an optional **Subject** or add and remo
 
 **Sent this session** shows the metadata captured for each acknowledged send; delivery cards show the metadata the consumers actually received from the broker.
 
+### Try the failure lab
+
+- **Fail first N attempts** (1–10, default 2): abandon attempts 1 and 2 at the default setting, then complete attempt 3. The message ID stays the same. Pub/sub subscriptions retry independently; competing-consumer attempts can appear in either lane.
+- **Poison message (always fail)** overrides fail-first. Intentional failures are abandoned on attempts 1–4 and explicitly dead-lettered on attempt 5 or later with reason `FailureLabAttemptLimit`. A fail-first count of 5 or higher also reaches that limit before succeeding. This is a demo decision, not a production retry policy.
+- **Slow handler** (1–120 seconds, default 5) delays each attempt before settlement, even when combined with a failure option. Send a slow message, then send another with the option off: each processor has two concurrent slots. The default delay is shorter than the emulator's default lock duration. Cards show the **initial** lock expiration, settlement time, and elapsed handling time; automatic lock renewal can extend the lock, so choosing a long delay does not guarantee lock expiry.
+
+The local Aspire emulator configuration sets the broker's `MaxDeliveryCount` to 5 on every subscription, including the routed subscriptions. This is separate from the application's limit of 5: an external broker must allow at least five deliveries for the application to explicitly dead-letter on the fifth attempt. Lock loss, shutdown, or a lower broker limit can prevent that outcome. Reports are best-effort and emitted only after successful settlement; a missing card doesn't prove settlement failed.
+
+**Design decision:** explicitly dead-letter on the fifth intentional failure instead of abandoning the fifth attempt and relying on the broker. This lets the lab report a confirmed `DeadLettered` settlement. Redelivery can repeat work, so real at-least-once handlers must be idempotent: applying the same message again must not repeat its business effects.
+
 ### Try a burst
 
 Choose **Competing consumers** or **Publish/subscribe** and enter a message. Set **Count** (1–500, default 10), leave **Limit rate** unchecked to go as fast as possible, or enable it and enter a whole-number rate (1–1000 messages per second). Select **Send burst** and watch the acknowledged-send progress and the two consumer bars. With all reports arriving once, the competing-consumer bars sum to the acknowledged send count, while each pub/sub bar reaches that count.
 
-The Web UI loops sequentially over the existing producer routes rather than using a batch API. This keeps the per-message acknowledgements and lets the UI pace request starts and cancel between requests. A fixed rate is a cap, not a throughput guarantee. **Cancel burst** interrupts any pacing delay and stops new requests; it lets an already-started request finish and counts its acknowledgement if it succeeds. A failed request stops the burst without retrying: the producer may have accepted it even if the UI didn't receive confirmation.
+The burst uses a snapshot of the selected failure options for every message. The Web UI loops sequentially over the existing producer routes rather than using a batch API. This keeps the per-message acknowledgements and lets the UI pace request starts and cancel between requests. A fixed rate is a cap, not a throughput guarantee. **Cancel burst** interrupts any pacing delay and stops new requests; it lets an already-started request finish and counts its acknowledgement if it succeeds. A failed request stops the burst without retrying: the producer may have accepted it even if the UI didn't receive confirmation.
 
 Use **Cancel burst** and wait for it to finish before leaving if you want to see the final acknowledged count. Leaving or reloading during an active burst can interrupt it and loses the page's progress and statistics. The producer may still accept an in-flight message without the page receiving confirmation. The page shows this warning during the burst; reloads and tab closes use the browser's standard leave-page prompt when allowed.
 
@@ -240,7 +247,7 @@ With Azure.Messaging.ServiceBus 7.20.2, `ServiceBusAdministrationClient.GetSubsc
 
 Home therefore shows **Estimated pending** and **Dead-letter: unavailable** for each subscription. It counts distinct acknowledged message IDs for the row's topic that have no matching report for that topic and subscription in the current delivery feed. Either consumer can satisfy the shared subscription's report; broadcast subscriptions are counted independently. There is no broker polling for these estimates.
 
-The estimate covers only sends acknowledged on this page, not external sends or sends in other tabs. Reports are best-effort, precede broker completion, and the feed retains only the most recent 200 reports. Clearing the feed or evicting an older report can increase the estimate; reloading loses this page's sent history.
+The estimate covers only sends acknowledged on this page, not external sends or sends in other tabs. Any matching settlement report reduces the estimate, even an abandonment that leaves the message eligible for redelivery. Reports are best-effort, and the feed retains only the most recent 200. Clearing the feed or evicting an older report can increase the estimate; reloading loses this page's sent history.
 
 To walk through the estimate, start with a fresh Home page:
 
@@ -254,6 +261,14 @@ Verified separately in Chromium against the running AppHost and emulator: the sh
 
 ```powershell
 dotnet test ServiceBusDemo.slnx
+```
+
+To run the single-send validation tests in Chromium with Node.js and npm installed (no Docker required):
+
+```powershell
+npm --prefix ServiceBusDemo.Tests/browser ci
+npm --prefix ServiceBusDemo.Tests/browser run install-browser
+npm --prefix ServiceBusDemo.Tests/browser test
 ```
 
 ## Try the producer API directly
@@ -287,9 +302,9 @@ curl -X POST "<producer-url>/routedMessage" \
 ```
 
 A routed request maps nonempty string `priority` and `region` values to the broker application properties `Priority` and `Region` respectively.
-A successful request returns `202 Accepted` with the generated `messageId` and topic name. The API rejects an empty message with `400 Bad Request`.
+A successful request returns `202 Accepted` with the generated `messageId` and topic name. All three routes accept optional `failFirstCount` (integer 1–10), `alwaysFail` (boolean), and `delaySeconds` (integer 1–120). Selected options become the Service Bus application properties `fail-first-count`, `always-fail`, and `delay-seconds`. Requests with only `message` remain valid. Empty messages, invalid option values, and invalid metadata return `400 Bad Request` without publishing.
 
-Both routes also accept optional `subject`, `correlationId`, and a string-valued `applicationProperties` object. Existing message-only requests still work, and each optional field can be omitted or set to `null`. For example:
+All three routes also accept optional `subject`, `correlationId`, and a string-valued `applicationProperties` object. Existing message-only requests still work, and each optional field can be omitted or set to `null`. For example:
 
 ```json
 {
@@ -304,7 +319,7 @@ Subject, CorrelationId, and application-property keys are limited to 128 charact
 
 ## Delivery event ingest
 
-`POST /api/deliveries` on **webfrontend** accepts a JSON [`DeliveryEvent`](ServiceBusDemo.ServiceDefaults/DeliveryEvent.cs) and returns `202 Accepted` for a valid event. After logging a delivery, each consumer queues a report that includes the broker's delivery count. Each consumer can queue up to 256 reports and sends them in the background with a two-second timeout and no retries. If Web is unavailable or the reporting queue is full, reports may be lost without affecting Service Bus processing. Pending reports are discarded at shutdown.
+`POST /api/deliveries` on **webfrontend** accepts a JSON [`DeliveryEvent`](ServiceBusDemo.ServiceDefaults/DeliveryEvent.cs) and returns `202 Accepted` for a valid event. After successfully settling an attempt, each consumer queues a report that includes `deliveryCount`, `outcome` (`Completed`, `Abandoned`, or `DeadLettered`), `receivedAt`, `initialLockedUntil`, and `settledAt`. Each consumer can queue up to 256 reports and sends them in the background with a two-second timeout and no retries. If Web is unavailable or the reporting queue is full, reports may be lost without affecting Service Bus processing. Pending reports are discarded at shutdown.
 
 Reports may include the broker's `subject`, `correlationId`, and `applicationProperties`. Application-property values from other producers are formatted as strings for display; older reports can omit all metadata.
 
@@ -326,7 +341,7 @@ The feed keeps the most recent 200 events in memory and loses them when the Web 
 - A **topic** is the publish endpoint; a **subscription** is an independently consumable view of messages published to that topic.
 - A subscription is a durable messaging entity, not just a listener. Its messages remain available to that subscription until they are completed, expired, or otherwise removed under the entity's rules.
 - Competing consumers share the subscription's work. Separate subscriptions each get their own copy. To add a new subscriber, create a new subscription.
-- Delivery is generally **at least once**. A process failure or lock expiry can result in redelivery, so real handlers should be safe to run more than once. This demo logs messages and auto-completes them; it is illustrating routing, not implementing business processing or retries.
+- Delivery is generally **at least once**. A process failure or lock expiry can result in redelivery, so real handlers should be safe to run more than once. This demo illustrates settlement and redelivery without performing real business processing.
 - This project uses Aspire's **local Service Bus emulator** for development. For Azure, provision the entities and configure the client to use an Azure namespace and an appropriate identity/credential; don't treat the local emulator as a production broker.
 
 ## Extend the demo

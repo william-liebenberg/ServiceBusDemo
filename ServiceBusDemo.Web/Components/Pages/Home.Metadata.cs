@@ -61,7 +61,7 @@ public partial class Home
     {
         var properties = ValidateMetadata(out var optionalSubject);
         return metadataErrors.Count == 0
-            ? new(message, optionalSubject,
+            ? new(message, Subject: optionalSubject,
                 ApplicationProperties: properties.Count == 0 ? null : new ReadOnlyDictionary<string, string>(properties),
                 Priority: IsTopicFilters && !string.IsNullOrWhiteSpace(model.Priority) ? model.Priority : null,
                 Region: IsTopicFilters && !string.IsNullOrWhiteSpace(model.Region) ? model.Region : null)
@@ -97,6 +97,10 @@ public partial class Home
             if (!MessageMetadataRules.IsValid(row.Key, MessageMetadataRules.NameLimit))
             {
                 metadataErrors.Add($"Property {i + 1} key must be non-blank and at most {MessageMetadataRules.NameLimit} characters.");
+            }
+            else if (FailureLab.IsReservedProperty(row.Key))
+            {
+                metadataErrors.Add($"Property {i + 1}: {row.Key} is reserved. Use the Failure lab controls instead.");
             }
             else if (IsTopicFilters && row.Key is "Priority" or "Region")
             {

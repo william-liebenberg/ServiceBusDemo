@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using Azure.Messaging.ServiceBus;
 using ServiceBusDemo.ServiceDefaults;
 
@@ -53,6 +54,14 @@ static async Task<IResult> PublishAsync(SendMessageRequest request, ServiceBusSe
     {
         return Results.BadRequest("Message is required.");
     }
+    if (request.FailFirstCount is < FailureLab.Minimum or > FailureLab.MaxFailFirstCount)
+    {
+        return Results.BadRequest($"Fail-first count must be from {FailureLab.Minimum} to {FailureLab.MaxFailFirstCount}.");
+    }
+    if (request.DelaySeconds is < FailureLab.Minimum or > FailureLab.MaxDelaySeconds)
+    {
+        return Results.BadRequest($"Delay seconds must be from {FailureLab.Minimum} to {FailureLab.MaxDelaySeconds}.");
+    }
 
     if (request.Subject is not null && !MessageMetadataRules.IsValid(request.Subject, MessageMetadataRules.NameLimit))
     {
@@ -64,11 +73,20 @@ static async Task<IResult> PublishAsync(SendMessageRequest request, ServiceBusSe
         return Results.BadRequest($"CorrelationId must be non-blank and at most {MessageMetadataRules.NameLimit} characters.");
     }
 
-    if (request.ApplicationProperties is { } properties && properties.Any(property =>
-            !MessageMetadataRules.IsValid(property.Key, MessageMetadataRules.NameLimit) ||
-            !MessageMetadataRules.IsValid(property.Value, MessageMetadataRules.ValueLimit)))
+    if (request.ApplicationProperties is { } properties)
     {
-        return Results.BadRequest($"Application property keys and values must be non-blank and at most {MessageMetadataRules.NameLimit} and {MessageMetadataRules.ValueLimit} characters, respectively.");
+        var reservedKey = properties.Keys.FirstOrDefault(FailureLab.IsReservedProperty);
+        if (reservedKey is not null)
+        {
+            return Results.BadRequest($"Application property '{reservedKey}' is reserved for Failure lab. Use the failFirstCount, alwaysFail, or delaySeconds request fields instead.");
+        }
+
+        if (properties.Any(property =>
+                !MessageMetadataRules.IsValid(property.Key, MessageMetadataRules.NameLimit) ||
+                !MessageMetadataRules.IsValid(property.Value, MessageMetadataRules.ValueLimit)))
+        {
+            return Results.BadRequest($"Application property keys and values must be non-blank and at most {MessageMetadataRules.NameLimit} and {MessageMetadataRules.ValueLimit} characters, respectively.");
+        }
     }
 
     var message = new ServiceBusMessage(request.Message)
@@ -99,6 +117,18 @@ static async Task<IResult> PublishAsync(SendMessageRequest request, ServiceBusSe
     {
         message.ApplicationProperties["Region"] = request.Region;
     }
+    if (request.FailFirstCount is int failFirstCount)
+    {
+        message.ApplicationProperties[FailureLab.FailFirstCountProperty] = failFirstCount;
+    }
+    if (request.AlwaysFail)
+    {
+        message.ApplicationProperties[FailureLab.AlwaysFailProperty] = true;
+    }
+    if (request.DelaySeconds is int delaySeconds)
+    {
+        message.ApplicationProperties[FailureLab.DelaySecondsProperty] = delaySeconds;
+    }
 
     await sender.SendMessageAsync(message, cancellationToken);
     logger.LogInformation("Sent message {MessageId} to topic {Topic}: {Body}", message.MessageId, sender.EntityPath, request.Message);
@@ -106,7 +136,11 @@ static async Task<IResult> PublishAsync(SendMessageRequest request, ServiceBusSe
     return Results.Accepted(value: new { message.MessageId, Topic = sender.EntityPath });
 }
 
-record SendMessageRequest(string Message, string? Subject = null, string? CorrelationId = null,
+record SendMessageRequest(string Message,
+    [property: JsonNumberHandling(JsonNumberHandling.Strict)] int? FailFirstCount = null,
+    bool AlwaysFail = false,
+    [property: JsonNumberHandling(JsonNumberHandling.Strict)] int? DelaySeconds = null,
+    string? Subject = null, string? CorrelationId = null,
     Dictionary<string, string>? ApplicationProperties = null, string? Priority = null, string? Region = null);
 
 public sealed class ProducerEndpointAssembly;
@@ -116,4 +150,10 @@ static class SenderKeys
     public const string BusinessEvents = "business-events";
     public const string BroadcastEvents = "broadcast-events";
     public const string RoutedEvents = "routed-events";
+}
+
+// Entry point for producer HTTP integration tests.
+namespace ServiceBusDemo.Producer
+{
+    public sealed class ProducerApiMarker;
 }

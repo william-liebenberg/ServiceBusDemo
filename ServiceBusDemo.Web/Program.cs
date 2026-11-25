@@ -78,7 +78,11 @@ app.MapPost("/api/deliveries", async (HttpRequest request, DeliveryFeed feed, IO
         || string.IsNullOrWhiteSpace(delivery.Subscription)
         || delivery.Body is null
         || delivery.DeliveryCount < 1
-        || delivery.ReceivedAt == default)
+        || delivery.ReceivedAt == default
+        || delivery.Outcome is not (DeliveryOutcomes.Completed or DeliveryOutcomes.Abandoned or DeliveryOutcomes.DeadLettered)
+        || delivery.InitialLockedUntil == default
+        || delivery.SettledAt == default
+        || delivery.SettledAt < delivery.ReceivedAt)
     {
         return Results.BadRequest();
     }

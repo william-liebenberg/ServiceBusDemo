@@ -122,7 +122,7 @@ public partial class Home
         var rateValid = !fixedRate || TryBoundedInteger(burstRate, 1000, out rate);
         countError = countValid ? null : "Enter a whole number from 1 to 500.";
         rateError = rateValid ? null : "Enter a whole number from 1 to 1000.";
-        var request = SnapshotRequest(model.Message?.Trim() ?? "");
+        var request = CreateCompleteSendRequest(model.Message?.Trim() ?? "");
         if (!messageValid || !countValid || !rateValid || request is null)
         {
             if (!messageValid && messageInput.Element is { } field)
@@ -131,7 +131,14 @@ public partial class Home
             }
             else if (request is null)
             {
-                FocusMetadataErrors();
+                if (metadataErrors.Count > 0)
+                {
+                    FocusMetadataErrors();
+                }
+                else
+                {
+                    FocusInvalidFailureOption();
+                }
             }
             return;
         }

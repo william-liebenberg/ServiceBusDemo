@@ -14,9 +14,11 @@ public class DeliveryEndpointTests
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private static readonly DeliveryEvent Example = new(
         "message-1", "CompetingConsumers", "consumer-one", "business-events", "business-events", "Order placed", 1,
-        new DateTimeOffset(2026, 1, 2, 3, 4, 5, TimeSpan.FromHours(2)));
+        new DateTimeOffset(2026, 1, 2, 3, 4, 5, TimeSpan.FromHours(2)), DeliveryOutcomes.Completed,
+        new DateTimeOffset(2026, 1, 2, 3, 5, 5, TimeSpan.FromHours(2)),
+        new DateTimeOffset(2026, 1, 2, 3, 4, 10, TimeSpan.FromHours(2)));
     private static readonly string[] FieldNames =
-        ["messageId", "pattern", "consumer", "topic", "subscription", "body", "deliveryCount", "receivedAt"];
+        ["messageId", "pattern", "consumer", "topic", "subscription", "body", "deliveryCount", "receivedAt", "outcome", "initialLockedUntil", "settledAt"];
 
     [Theory]
     [InlineData("CompetingConsumers", "Order placed", "application/json")]
@@ -137,6 +139,10 @@ public class DeliveryEndpointTests
         bodies.Add(WithField("deliveryCount", JsonValue.Create(1.5)));
         bodies.Add(WithField("receivedAt", JsonValue.Create("not a date")));
         bodies.Add(WithField("receivedAt", JsonValue.Create("0001-01-01T00:00:00+00:00")));
+        bodies.Add(WithField("outcome", JsonValue.Create("completed")));
+        bodies.Add(WithField("outcome", JsonValue.Create(1)));
+        bodies.Add(WithField("initialLockedUntil", JsonValue.Create("not a date")));
+        bodies.Add(WithField("settledAt", JsonValue.Create("2000-01-01T00:00:00Z")));
         return bodies;
     }
 

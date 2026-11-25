@@ -1,3 +1,4 @@
+using Azure.Messaging.ServiceBus;
 using System.Collections.Concurrent;
 using System.Net.Http.Json;
 using AngleSharp.Html.Dom;
@@ -83,9 +84,11 @@ public class WebTests
 
         await using var app = await appHost.BuildAsync(token);
         await app.StartAsync(token);
+        var runningConsumers = new Dictionary<string, string>();
         foreach (var resource in new[] { "webfrontend", "consumer-one", "consumer-two" })
         {
-            await app.ResourceNotifications.WaitForResourceHealthyAsync(resource, token);
+            var healthy = await app.ResourceNotifications.WaitForResourceHealthyAsync(resource, token);
+            if (resource != "webfrontend") runningConsumers.Add(resource, healthy.ResourceId);
         }
 
         using var web = app.CreateHttpClient("webfrontend", "http");
@@ -115,6 +118,16 @@ public class WebTests
         var two = webFactory.Services.GetRequiredService<ConsumerTwoControlClient>();
         await VerifyConsumerControlAsync(producer, one, two, reports, token);
 
+        Assert.All(reports, report =>
+        {
+            Assert.Equal(1, report.Delivery.DeliveryCount);
+            Assert.Equal(DeliveryOutcomes.Completed, report.Delivery.Outcome);
+        });
+        var connectionString = await app.GetConnectionStringAsync("messaging", token);
+        await using var bus = new ServiceBusClient(connectionString!);
+        var resourceLogs = app.Services.GetRequiredService<ResourceLoggerService>();
+        await VerifyFailureLabAsync(producer, bus, resourceLogs, runningConsumers, reports, token);
+
         var commandService = app.Services.GetRequiredService<ResourceCommandService>();
         var stop = await commandService.ExecuteCommandAsync("webfrontend", "resource-stop", token);
         Assert.True(stop.Success, stop.Message);
@@ -128,6 +141,8 @@ public class WebTests
             var offlineReports = reports.Where(report => report.Delivery.MessageId == offline).ToArray();
             Assert.All(offlineReports, report => Assert.True((int)report.Status >= 500, $"Unexpected status {report.Status}"));
             AssertFanout(offlineReports.Select(report => report.Delivery));
+            Assert.All(offlineReports, report => Assert.Equal((1, DeliveryOutcomes.Completed),
+                (report.Delivery.DeliveryCount, report.Delivery.Outcome)));
         }
 
         var shared = Assert.Single(reports, report => report.Delivery.MessageId == competing);
@@ -139,7 +154,88 @@ public class WebTests
         var fanoutReports = reports.Where(report => report.Delivery.MessageId == broadcast).ToArray();
         Assert.All(fanoutReports, report => Assert.Equal(HttpStatusCode.Accepted, report.Status));
         AssertFanout(fanoutReports.Select(report => report.Delivery));
-        Assert.All(reports, report => Assert.Equal(1, report.Delivery.DeliveryCount));
+    }
+
+    private static async Task VerifyFailureLabAsync(HttpClient producer, ServiceBusClient bus, ResourceLoggerService resourceLogs,
+        Dictionary<string, string> runningConsumers,
+        ConcurrentQueue<(DeliveryEvent Delivery, HttpStatusCode Status)> reports, CancellationToken token)
+    {
+        foreach (var (endpoint, topic, subscriptions) in new[]
+        {
+            ("/sendMessage", "business-events", new[] { "business-events" }),
+            ("/broadcastMessage", "broadcast-events", new[] { "consumer-one", "consumer-two" })
+        })
+        {
+            var retry = await PublishAsync(producer, endpoint, token, new("Retry", FailFirstCount: 2));
+            await VerifyAttemptsAsync(retry, [DeliveryOutcomes.Abandoned, DeliveryOutcomes.Abandoned, DeliveryOutcomes.Completed]);
+
+            var poison = await PublishAsync(producer, endpoint, token, new("Poison", AlwaysFail: true));
+            await VerifyAttemptsAsync(poison, [DeliveryOutcomes.Abandoned, DeliveryOutcomes.Abandoned,
+                DeliveryOutcomes.Abandoned, DeliveryOutcomes.Abandoned, DeliveryOutcomes.DeadLettered]);
+            foreach (var subscription in subscriptions)
+            {
+                await using var dlq = bus.CreateReceiver(topic, subscription, new() { SubQueue = SubQueue.DeadLetter });
+                var messages = await dlq.PeekMessagesAsync(10, cancellationToken: token);
+                var entry = Assert.Single(messages, message => message.MessageId == poison);
+                Assert.Equal(FailureLab.DeadLetterReason, entry.DeadLetterReason);
+            }
+
+            async Task VerifyAttemptsAsync(string id, string[] expected)
+            {
+                await WaitForReportsAsync(reports, id, subscriptions.Length * expected.Length, token);
+                var attempts = reports.Where(report => report.Delivery.MessageId == id).ToArray();
+                Assert.All(attempts, report => Assert.Equal(HttpStatusCode.Accepted, report.Status));
+                Assert.Equal(subscriptions.Order(), attempts.Select(report => report.Delivery.Subscription).Distinct().Order());
+                foreach (var subscription in subscriptions)
+                {
+                    var ordered = attempts.Select(report => report.Delivery).Where(delivery => delivery.Subscription == subscription)
+                        .OrderBy(delivery => delivery.DeliveryCount).ToArray();
+                    Assert.Equal(Enumerable.Range(1, expected.Length), ordered.Select(delivery => delivery.DeliveryCount));
+                    Assert.Equal(expected, ordered.Select(delivery => delivery.Outcome));
+                }
+            }
+        }
+
+        // Each broadcast subscription has exactly one processor, so overlap proves concurrent handling there.
+        const int delaySeconds = 10;
+        var slow = await PublishAsync(producer, "/broadcastMessage", token, new("Slow", DelaySeconds: delaySeconds));
+        // Receipt is logged before the delay. Wait for both subscriptions rather than guessing when they start.
+        await Task.WhenAll(runningConsumers.Select(consumer =>
+            WaitForReceiptAsync(resourceLogs, consumer.Value, consumer.Key, slow, token)));
+        var fast = await PublishAsync(producer, "/broadcastMessage", token);
+        await WaitForReportsAsync(reports, slow, 2, token);
+        await WaitForReportsAsync(reports, fast, 2, token);
+        foreach (var report in reports.Where(report => report.Delivery.MessageId == slow))
+        {
+            var delayed = report.Delivery;
+            var normal = Assert.Single(reports, other => other.Delivery.MessageId == fast
+                && other.Delivery.Subscription == delayed.Subscription).Delivery;
+            Assert.Equal((1, DeliveryOutcomes.Completed), (delayed.DeliveryCount, delayed.Outcome));
+            Assert.Equal((1, DeliveryOutcomes.Completed), (normal.DeliveryCount, normal.Outcome));
+            Assert.True(delayed.InitialLockedUntil > delayed.ReceivedAt);
+            Assert.True(delayed.SettledAt - delayed.ReceivedAt >= TimeSpan.FromSeconds(delaySeconds - 0.1));
+            Assert.InRange(normal.SettledAt, delayed.ReceivedAt, delayed.SettledAt);
+        }
+    }
+
+    private static async Task WaitForReceiptAsync(ResourceLoggerService resourceLogs, string resourceId, string subscription,
+        string id, CancellationToken token)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
+        deadline.CancelAfter(TimeSpan.FromSeconds(30));
+        var receipt = $"received message {id} from broadcast-events/{subscription}:";
+        try
+        {
+            await foreach (var batch in resourceLogs.WatchAsync(resourceId).WithCancellation(deadline.Token))
+            {
+                if (batch.Any(line => line.Content.Contains(receipt, StringComparison.Ordinal)))
+                {
+                    return;
+                }
+            }
+        }
+        catch (OperationCanceledException) when (!token.IsCancellationRequested) { }
+        Assert.Fail($"No receipt log for {id} on {subscription}.");
     }
 
     private static async Task VerifyRoutingAsync(HttpClient producer,
@@ -287,9 +383,9 @@ public class WebTests
         });
     }
 
-    private static async Task<string> PublishAsync(HttpClient producer, string endpoint, CancellationToken token)
+    private static async Task<string> PublishAsync(HttpClient producer, string endpoint, CancellationToken token, SendMessageRequest? request = null)
     {
-        using var response = await producer.PostAsJsonAsync(endpoint, new { Message = "Order placed" }, token);
+        using var response = await producer.PostAsJsonAsync<object>(endpoint, request is null ? new { Message = "Order placed" } : request, token);
         Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
         var result = await response.Content.ReadFromJsonAsync<SendMessageResult>(token);
         return result!.MessageId;

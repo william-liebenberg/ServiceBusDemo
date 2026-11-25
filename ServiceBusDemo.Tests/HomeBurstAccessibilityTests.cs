@@ -123,6 +123,51 @@ public class HomeBurstAccessibilityTests
     }
 
     [Fact]
+    public async Task InvalidSharedOptionsAreDescribedAndFocusedInOrderAndClearOnEdit()
+    {
+        using var client = new HttpClient(new AcceptMessage()) { BaseAddress = new Uri("http://producer.test") };
+        await using var context = CreateContext(client, new DeliveryFeed());
+        var home = context.Render<Home>();
+        home.Find("#message").Change("Order 42");
+        home.Find("#fail-first").Change(true);
+        home.Find("#slow-handler").Change(true);
+        home.Find("#fail-first-count").Input("0");
+        await home.Find("#burst-form").SubmitAsync();
+        var failFirstFocus = LastFocus();
+        Assert.Single(home.FindAll("#fail-first-count[aria-invalid=true][aria-describedby=fail-first-error]"));
+        Assert.Contains("whole number", home.Find("#fail-first-error[aria-live=polite].text-danger-emphasis").TextContent);
+
+        home.Find("#delay-seconds").Input("121");
+        await home.Find("#burst-form").SubmitAsync();
+        Assert.Equal(failFirstFocus, LastFocus());
+        Assert.Single(home.FindAll("#delay-seconds[aria-invalid=true][aria-describedby=delay-seconds-error]"));
+        Assert.Contains("whole number", home.Find("#delay-seconds-error[aria-live=polite].text-danger-emphasis").TextContent);
+
+        home.Find("#fail-first-count").Input("2");
+        Assert.Single(home.FindAll("#fail-first-count[aria-invalid=false]"));
+        Assert.Empty(home.Find("#fail-first-error").TextContent);
+        await home.Find("#burst-form").SubmitAsync();
+        Assert.NotEqual(failFirstFocus, LastFocus());
+        Assert.Equal(3, context.JSInterop.Invocations["Blazor._internal.domWrapper.focus"].Count);
+        Assert.Empty(home.FindAll("#burst-progress"));
+
+        home.Find("#slow-handler").Change(false);
+        Assert.Empty(home.FindAll("#delay-seconds, #delay-seconds-error"));
+        home.Find("#slow-handler").Change(true);
+        Assert.Single(home.FindAll("#delay-seconds[aria-invalid=false]"));
+        Assert.Empty(home.Find("#delay-seconds-error").TextContent);
+
+        string LastFocus()
+        {
+            var focus = context.JSInterop.Invocations["Blazor._internal.domWrapper.focus"].Last();
+            Assert.False(Assert.IsType<bool>(focus.Arguments[1]));
+            var id = Assert.IsType<ElementReference>(focus.Arguments[0]).Id;
+            Assert.NotEmpty(id);
+            return id;
+        }
+    }
+
+    [Fact]
     public async Task BurstLiveRegionSummarizesAcknowledgementsAndLateMatchingReports()
     {
         using var client = new HttpClient(new AcceptMessage()) { BaseAddress = new Uri("http://producer.test") };
@@ -157,7 +202,8 @@ public class HomeBurstAccessibilityTests
     }
 
     private static DeliveryEvent Report(string id, string consumer) =>
-        new(id, nameof(MessagingPattern.CompetingConsumers), consumer, "topic", "subscription", "Order 42", 1, DateTimeOffset.UnixEpoch);
+        new(id, nameof(MessagingPattern.CompetingConsumers), consumer, "topic", "subscription", "Order 42", 1, DateTimeOffset.UnixEpoch,
+            DeliveryOutcomes.Completed, DateTimeOffset.UnixEpoch.AddMinutes(1), DateTimeOffset.UnixEpoch);
 
     private static BunitContext CreateContext(HttpClient client, DeliveryFeed feed)
     {
