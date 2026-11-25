@@ -208,7 +208,7 @@ For any pattern, use **Advanced** to set an optional **Subject** or add and remo
 - **Poison message (always fail)** overrides fail-first. Intentional failures are abandoned on attempts 1–4 and explicitly dead-lettered on attempt 5 or later with reason `FailureLabAttemptLimit`. A fail-first count of 5 or higher also reaches that limit before succeeding. This is a demo decision, not a production retry policy.
 - **Slow handler** (1–120 seconds, default 5) delays each attempt before settlement, even when combined with a failure option. Send a slow message, then send another with the option off: each processor has two concurrent slots. The default delay is shorter than the emulator's default lock duration. Cards show the **initial** lock expiration, settlement time, and elapsed handling time; automatic lock renewal can extend the lock, so choosing a long delay does not guarantee lock expiry.
 
-The local Aspire emulator configuration sets the broker's `MaxDeliveryCount` to 5 on all three subscriptions. This is separate from the application's limit of 5: an external broker must allow at least five deliveries for the application to explicitly dead-letter on the fifth attempt. Lock loss, shutdown, or a lower broker limit can prevent that outcome. Reports are best-effort and emitted only after successful settlement; a missing card doesn't prove settlement failed.
+The local Aspire emulator configuration sets the broker's `MaxDeliveryCount` to 5 on every subscription, including the routed subscriptions. This is separate from the application's limit of 5: an external broker must allow at least five deliveries for the application to explicitly dead-letter on the fifth attempt. Lock loss, shutdown, or a lower broker limit can prevent that outcome. Reports are best-effort and emitted only after successful settlement; a missing card doesn't prove settlement failed.
 
 **Design decision:** explicitly dead-letter on the fifth intentional failure instead of abandoning the fifth attempt and relying on the broker. This lets the lab report a confirmed `DeadLettered` settlement. Redelivery can repeat work, so real at-least-once handlers must be idempotent: applying the same message again must not repeat its business effects.
 
@@ -247,7 +247,7 @@ With Azure.Messaging.ServiceBus 7.20.2, `ServiceBusAdministrationClient.GetSubsc
 
 Home therefore shows **Estimated pending** and **Dead-letter: unavailable** for each subscription. It counts distinct acknowledged message IDs for the row's topic that have no matching report for that topic and subscription in the current delivery feed. Either consumer can satisfy the shared subscription's report; broadcast subscriptions are counted independently. There is no broker polling for these estimates.
 
-The estimate covers only sends acknowledged on this page, not external sends or sends in other tabs. Reports are best-effort, precede broker completion, and the feed retains only the most recent 200 reports. Clearing the feed or evicting an older report can increase the estimate; reloading loses this page's sent history.
+The estimate covers only sends acknowledged on this page, not external sends or sends in other tabs. Any matching settlement report reduces the estimate, even an abandonment that leaves the message eligible for redelivery. Reports are best-effort, and the feed retains only the most recent 200. Clearing the feed or evicting an older report can increase the estimate; reloading loses this page's sent history.
 
 To walk through the estimate, start with a fresh Home page:
 

@@ -30,6 +30,7 @@ public class HomeFailureTests
         Assert.Equal("5", home.Find("#delay-seconds").GetAttribute("value"));
         Assert.Contains("idempotent", home.Find("#failure-lab-help").TextContent);
         home.Find("#message").Change("  Order  ");
+        home.Find("#advanced-subject").Input("Orders");
         home.Find("#fail-first-count").Input("1.5");
         await home.Find("form:first-of-type").SubmitAsync();
         Assert.Empty(handler.Requests);
@@ -37,7 +38,7 @@ public class HomeFailureTests
         Assert.Contains("whole number", home.Find("#fail-first-error").TextContent);
         home.Find("#fail-first-count").Input("3");
         await home.Find("form:first-of-type").SubmitAsync();
-        Assert.Equal(new("Order", 3, true, 5), Assert.Single(handler.Requests));
+        Assert.Equal(new("Order", 3, true, 5, Subject: "Orders"), Assert.Single(handler.Requests));
 
         home.Find("#burst-count").Input("2");
         home.Find("#delay-seconds").Input("121");
@@ -48,7 +49,7 @@ public class HomeFailureTests
         home.Find("#always-fail").Change(false);
         await home.Find("#burst-form").SubmitAsync();
         Assert.Equal(3, handler.Requests.Count);
-        Assert.All(handler.Requests.Skip(1), request => Assert.Equal(new("Order", 3, false, 9), request));
+        Assert.All(handler.Requests.Skip(1), request => Assert.Equal(new("Order", 3, false, 9, Subject: "Orders"), request));
     }
 
     [Fact]

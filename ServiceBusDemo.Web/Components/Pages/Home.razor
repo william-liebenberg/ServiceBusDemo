@@ -313,9 +313,10 @@
     </ul>
     <p id="depth-note" class="text-body-secondary">
         Subscription depth is unavailable for Topic filters (<code>routed-events</code>).
-        Estimates above cover acknowledged sends in this page session only, not external sends. Delivery reports are best-effort,
-        arrive before broker completion, and only the latest 200 are retained. Clearing the feed or reports aging out of it
-        can increase the estimate. Reloading loses this page’s sent history.
+        Estimates above cover acknowledged sends in this page session only, not external sends. A report reduces the estimate
+        even if the attempt was abandoned and can be retried. Reports are best-effort, and only the latest 200 are retained.
+        Clearing the feed or reports aging out of it can increase the estimate. Reloading loses this page’s sent history.
+
     </p>
 </section>
 

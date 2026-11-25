@@ -7,8 +7,8 @@ namespace ServiceBusDemo.Web;
 public abstract class ConsumerControlClient(HttpClient client, string consumer, int subscriptionCount)
 {
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(15);
-    // The two subscription processors are stopped sequentially and each can have a slow handler in flight.
-    private static readonly TimeSpan PauseTimeout = TimeSpan.FromSeconds(2 * FailureLab.MaxDelaySeconds) + RequestTimeout;
+    // Subscription processors stop sequentially and each can have a slow handler in flight.
+    private readonly TimeSpan pauseTimeout = TimeSpan.FromSeconds(subscriptionCount * FailureLab.MaxDelaySeconds) + RequestTimeout;
 
     public async Task<ConsumerStatus> GetStatusAsync(CancellationToken token)
     {
@@ -18,7 +18,7 @@ public abstract class ConsumerControlClient(HttpClient client, string consumer, 
         return await ReadStatusAsync(response, deadline.Token);
     }
 
-    public Task<ConsumerStatus> PauseAsync(CancellationToken token) => ChangeAsync("pause", ConsumerState.Paused, PauseTimeout, token);
+    public Task<ConsumerStatus> PauseAsync(CancellationToken token) => ChangeAsync("pause", ConsumerState.Paused, pauseTimeout, token);
     public Task<ConsumerStatus> ResumeAsync(CancellationToken token) => ChangeAsync("resume", ConsumerState.Running, RequestTimeout, token);
 
     private async Task<ConsumerStatus> ChangeAsync(string action, ConsumerState target, TimeSpan timeout, CancellationToken token)
