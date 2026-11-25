@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using Microsoft.AspNetCore.Components;
 using ServiceBusDemo.ServiceDefaults;
 
 namespace ServiceBusDemo.Web.Components.Pages;
@@ -11,27 +12,63 @@ public partial class Home
     private readonly List<PropertyRow> propertyRows = [];
     private int nextPropertyId;
     private readonly List<string> metadataErrors = [];
+    private bool advancedOpen;
+    private ElementReference advancedErrorSummary;
+    private ElementReference addPropertyButton;
 
     private void AddProperty()
     {
         if (!Busy)
         {
             propertyRows.Add(new(++nextPropertyId));
+            RevalidateMetadata();
         }
     }
 
     private void RemoveProperty(PropertyRow row)
     {
-        if (!Busy)
+        var index = propertyRows.IndexOf(row);
+        if (Busy || index < 0)
         {
-            propertyRows.Remove(row);
+            return;
         }
+
+        propertyRows.RemoveAt(index);
+        RevalidateMetadata();
+        // Continue in the next row, or the previous row if the last one was removed.
+        var target = propertyRows.Count == 0
+            ? addPropertyButton
+            : propertyRows[Math.Min(index, propertyRows.Count - 1)].KeyInput;
+        focusAfterRender = (target, false);
+    }
+
+    private void RevalidateMetadata()
+    {
+        // Don't flag incomplete rows before the user has tried to send them.
+        if (metadataErrors.Count > 0)
+        {
+            ValidateMetadata(out _);
+        }
+    }
+
+    private void FocusMetadataErrors()
+    {
+        advancedOpen = true;
+        focusAfterRender = (advancedErrorSummary, false);
     }
 
     private SendMessageRequest? SnapshotRequest(string message)
     {
+        var properties = ValidateMetadata(out var optionalSubject);
+        return metadataErrors.Count == 0
+            ? new(message, optionalSubject, ApplicationProperties: properties.Count == 0 ? null : new ReadOnlyDictionary<string, string>(properties))
+            : null;
+    }
+
+    private Dictionary<string, string> ValidateMetadata(out string? optionalSubject)
+    {
         metadataErrors.Clear();
-        var optionalSubject = string.IsNullOrWhiteSpace(subject) ? null : subject;
+        optionalSubject = string.IsNullOrWhiteSpace(subject) ? null : subject;
         if (optionalSubject is not null && !MessageMetadataRules.IsValid(optionalSubject, MessageMetadataRules.NameLimit))
         {
             metadataErrors.Add($"Subject must be at most {MessageMetadataRules.NameLimit} characters.");
@@ -69,9 +106,7 @@ public partial class Home
             }
         }
 
-        return metadataErrors.Count == 0
-            ? new(message, optionalSubject, ApplicationProperties: properties.Count == 0 ? null : new ReadOnlyDictionary<string, string>(properties))
-            : null;
+        return properties;
     }
 
     private sealed class PropertyRow(int id)
@@ -79,5 +114,6 @@ public partial class Home
         public int Id { get; } = id;
         public string Key { get; set; } = "";
         public string Value { get; set; } = "";
+        public ElementReference KeyInput { get; set; }
     }
 }

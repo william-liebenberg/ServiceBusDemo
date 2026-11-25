@@ -35,7 +35,6 @@
 
 <EditForm EditContext="messageContext" OnValidSubmit="SendAsync" FormName="send-message">
     <DataAnnotationsValidator />
-
     <fieldset class="mb-3" disabled="@Busy">
         <legend class="form-label fs-6">Pattern</legend>
         <InputRadioGroup @bind-Value="model.Pattern">
@@ -65,18 +64,30 @@
         </div>
     </div>
 
-    <details class="mb-3">
-        <summary id="advanced-heading">Advanced</summary>
+    <details class="mb-3" open="@advancedOpen">
+        <summary id="advanced-heading" @onclick="() => advancedOpen = !advancedOpen" @onclick:preventDefault>Advanced</summary>
+        <div id="advanced-errors" class="text-danger-emphasis" role="alert" aria-atomic="true" tabindex="-1" @ref="advancedErrorSummary">
+            @if (metadataErrors.Count > 0)
+            {
+                <p class="mb-1">Check the Advanced settings before sending:</p>
+                <ul>
+                    @foreach (var error in metadataErrors)
+                    {
+                        <li>@error</li>
+                    }
+                </ul>
+            }
+        </div>
         <fieldset class="my-2" disabled="@Busy" aria-labelledby="advanced-heading" aria-describedby="advanced-errors">
             <p class="text-body-secondary">Optional metadata for single sends and bursts.</p>
             <div class="metadata-fields mb-2">
                 <div>
                     <label class="form-label" for="advanced-subject">Subject</label>
-                    <input class="form-control" id="advanced-subject" @bind="subject" @bind:event="oninput" />
+                    <input class="form-control" id="advanced-subject" @bind="subject" @bind:event="oninput" @bind:after="RevalidateMetadata" />
                 </div>
                 <div>
                     <label class="form-label" for="advanced-priority">Priority</label>
-                    <select class="form-select" id="advanced-priority" @bind="priority">
+                    <select class="form-select" id="advanced-priority" @bind="priority" @bind:after="RevalidateMetadata">
                         <option value="">Not set</option>
                         <option>Low</option>
                         <option>Normal</option>
@@ -85,7 +96,7 @@
                 </div>
                 <div>
                     <label class="form-label" for="advanced-region">Region</label>
-                    <input class="form-control" id="advanced-region" @bind="region" @bind:event="oninput" />
+                    <input class="form-control" id="advanced-region" @bind="region" @bind:event="oninput" @bind:after="RevalidateMetadata" />
                 </div>
             </div>
             @for (var i = 0; i < propertyRows.Count; i++)
@@ -97,30 +108,18 @@
                 <div class="metadata-fields align-items-end mb-2" @key="row">
                     <div>
                         <label class="form-label" for="@keyId">Property @number key</label>
-                        <input class="form-control" id="@keyId" @bind="row.Key" @bind:event="oninput" />
+                        <input class="form-control" id="@keyId" @ref="row.KeyInput" @bind="row.Key" @bind:event="oninput" @bind:after="RevalidateMetadata" />
                     </div>
                     <div>
                         <label class="form-label" for="@valueId">Property @number value</label>
-                        <input class="form-control" id="@valueId" @bind="row.Value" @bind:event="oninput" />
+                        <input class="form-control" id="@valueId" @bind="row.Value" @bind:event="oninput" @bind:after="RevalidateMetadata" />
                     </div>
                     <button type="button" class="btn btn-outline-secondary" aria-label="Remove property @number" @onclick="() => RemoveProperty(row)">Remove</button>
                 </div>
             }
-            <button type="button" id="add-property" class="btn btn-outline-secondary" @onclick="AddProperty">Add property</button>
+            <button type="button" id="add-property" class="btn btn-outline-secondary" @onclick="AddProperty" @ref="addPropertyButton">Add property</button>
         </fieldset>
     </details>
-    <div id="advanced-errors" class="text-danger-emphasis" role="alert" aria-atomic="true">
-        @if (metadataErrors.Count > 0)
-        {
-            <p class="mb-1">Check the Advanced settings before sending:</p>
-            <ul>
-                @foreach (var error in metadataErrors)
-                {
-                    <li>@error</li>
-                }
-            </ul>
-        }
-    </div>
 
     <button type="submit" class="btn btn-primary" disabled="@Busy">
         @if (isSending)
@@ -148,7 +147,7 @@
             <div>
                 <div class="form-check">
                     <input id="burst-paced" type="checkbox" class="form-check-input" @bind="fixedRate" />
-                    <label class="form-check-label" for="burst-paced">Limit rate (unchecked: as fast as possible)</label>
+                    <label for="burst-paced" class="form-check-label">Limit rate (unchecked: as fast as possible)</label>
                 </div>
                 @if (fixedRate)
                 {
@@ -463,6 +462,7 @@
         var request = SnapshotRequest(model.Message!.Trim());
         if (request is null)
         {
+            FocusMetadataErrors();
             return;
         }
 

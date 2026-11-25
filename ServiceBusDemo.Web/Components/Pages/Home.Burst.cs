@@ -108,6 +108,8 @@ public partial class Home
             return;
         }
 
+        statusMessage = null;
+        burstStatus = null;
         var messageValid = await messageContext.ValidateAsync();
         if (disposed || Busy)
         {
@@ -126,6 +128,10 @@ public partial class Home
             {
                 focusAfterRender = (field, false);
             }
+            else if (request is null)
+            {
+                FocusMetadataErrors();
+            }
             return;
         }
 
@@ -135,7 +141,6 @@ public partial class Home
         burst = tracker;
         burstAnnouncement = null;
         announcedCounts = null;
-        statusMessage = null;
         burstFailed = false;
         burstStatus = "Sending burst…";
         cancelPending = false;
