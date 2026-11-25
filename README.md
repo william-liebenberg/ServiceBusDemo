@@ -208,6 +208,14 @@ The Web frontend and both consumers accept only loopback hostnames by default (`
 dotnet test ServiceBusDemo.slnx
 ```
 
+To run the single-send validation tests in Chromium with Node.js and npm installed (no Docker required):
+
+```powershell
+npm --prefix ServiceBusDemo.Tests/browser ci
+npm --prefix ServiceBusDemo.Tests/browser run install-browser
+npm --prefix ServiceBusDemo.Tests/browser test
+```
+
 ## Try the producer API directly
 
 The Producer API has two POST routes. Use the producer endpoint URL shown in the Aspire dashboard in place of `<producer-url>`:

@@ -6,28 +6,41 @@ namespace ServiceBusDemo.Web;
 
 public abstract class ConsumerControlClient(HttpClient client, string consumer)
 {
+    private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(15);
+    // The two subscription processors are stopped sequentially and each can have a slow handler in flight.
+    private static readonly TimeSpan PauseTimeout = TimeSpan.FromSeconds(2 * FailureLab.MaxDelaySeconds) + RequestTimeout;
+
     public async Task<ConsumerStatus> GetStatusAsync(CancellationToken token)
     {
-        using var response = await client.GetAsync("/control/status", token);
+        using var deadline = CreateDeadline(token, RequestTimeout);
+        using var response = await client.GetAsync("/control/status", deadline.Token);
         response.EnsureSuccessStatusCode();
-        return await ReadStatusAsync(response, token);
+        return await ReadStatusAsync(response, deadline.Token);
     }
 
-    public Task<ConsumerStatus> PauseAsync(CancellationToken token) => ChangeAsync("pause", ConsumerState.Paused, token);
-    public Task<ConsumerStatus> ResumeAsync(CancellationToken token) => ChangeAsync("resume", ConsumerState.Running, token);
+    public Task<ConsumerStatus> PauseAsync(CancellationToken token) => ChangeAsync("pause", ConsumerState.Paused, PauseTimeout, token);
+    public Task<ConsumerStatus> ResumeAsync(CancellationToken token) => ChangeAsync("resume", ConsumerState.Running, RequestTimeout, token);
 
-    private async Task<ConsumerStatus> ChangeAsync(string action, ConsumerState target, CancellationToken token)
+    private async Task<ConsumerStatus> ChangeAsync(string action, ConsumerState target, TimeSpan timeout, CancellationToken token)
     {
+        using var deadline = CreateDeadline(token, timeout);
         using var request = new HttpRequestMessage(HttpMethod.Post, $"/control/{action}");
         request.Headers.Add(ConsumerControlProtocol.HeaderName, ConsumerControlProtocol.HeaderValue);
-        using var response = await client.SendAsync(request, token);
+        using var response = await client.SendAsync(request, deadline.Token);
         if (response.StatusCode == HttpStatusCode.ServiceUnavailable && response.Content.Headers.ContentType?.MediaType == "application/json")
         {
-            throw new ConsumerTransitionException(await ReadStatusAsync(response, token));
+            throw new ConsumerTransitionException(await ReadStatusAsync(response, deadline.Token));
         }
         response.EnsureSuccessStatusCode();
-        var status = await ReadStatusAsync(response, token);
+        var status = await ReadStatusAsync(response, deadline.Token);
         return status.State == target ? status : throw new ConsumerTransitionException(status);
+    }
+
+    private static CancellationTokenSource CreateDeadline(CancellationToken token, TimeSpan timeout)
+    {
+        var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
+        deadline.CancelAfter(timeout);
+        return deadline;
     }
 
     private async Task<ConsumerStatus> ReadStatusAsync(HttpResponseMessage response, CancellationToken token)
@@ -62,7 +75,7 @@ internal static class ConsumerControlClientRegistration
         var builder = services.AddHttpClient<T>(client =>
             {
                 client.BaseAddress = new(address);
-                client.Timeout = TimeSpan.FromSeconds(15);
+                client.Timeout = Timeout.InfiniteTimeSpan; // Each operation sets its own deadline.
             })
             .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
         // Do not replay a state change after another tab has requested a conflicting action.

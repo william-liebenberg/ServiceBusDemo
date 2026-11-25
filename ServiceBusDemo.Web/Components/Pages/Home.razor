@@ -34,7 +34,8 @@
 
 <p>Publish a message to Azure Service Bus via the producer API, choosing which messaging pattern to demonstrate.</p>
 
-<EditForm EditContext="messageContext" OnValidSubmit="SendAsync" FormName="send-message">
+@* Let Blazor show the same accessible option errors for single and burst sends. *@
+<EditForm EditContext="messageContext" OnValidSubmit="SendAsync" FormName="send-message" novalidate>
     <DataAnnotationsValidator />
 
     <fieldset class="mb-3" disabled="@Busy">
@@ -196,6 +197,8 @@
         <button type="button" class="btn btn-outline-secondary btn-sm" @onclick="Feed.Clear">Clear</button>
     </div>
     <p class="text-body-secondary">Only recent reports are shown, across all tabs. Clear removes shared reports, not sent history or burst statistics.</p>
+    <p class="text-body-secondary">Automatic lock renewal can extend a message's lock past the initial expiration shown on its card.
+        A long handler delay does not guarantee lock expiry.</p>
     <div id="delivery-status" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true">
         <span @key="deliveryStatusVersion">@deliveryStatus</span>
     </div>
