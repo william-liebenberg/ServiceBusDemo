@@ -196,6 +196,12 @@ To observe the difference, send one message with each pattern and look at the co
 - **Publish/subscribe:** find `[PubSub]`; both consumers log the same message ID, each from its own subscription.
 - **Topic filters:** find `[TopicFilters]`; the same message ID appears once for each matching subscription.
 
+### Add message metadata
+
+Open **Advanced** to set a Subject, select a Priority (`Low`, `Normal`, or `High`), enter a Region, or add and remove custom key/value rows. Blank Subject and Region and an unselected Priority are omitted. Priority and Region are sent as application properties named `Priority` and `Region`. Custom rows require both a key and a value; keys cannot duplicate another row or a populated dedicated field, ignoring case.
+
+The same controls apply to single sends and bursts. A burst captures the Advanced settings once before sending and uses them for every message. **Sent this session** shows the metadata captured for each acknowledged send; delivery cards show the metadata the consumers actually received from the broker.
+
 ### Try a burst
 
 Choose **Competing consumers** or **Publish/subscribe** and enter a message. Set **Count** (1–500, default 10), leave **Limit rate** unchecked to go as fast as possible, or enable it and enter a whole-number rate (1–1000 messages per second). Select **Send burst** and watch the acknowledged-send progress and the two consumer bars. With all reports arriving once, the competing-consumer bars sum to the acknowledged send count, while each pub/sub bar reaches that count.
@@ -219,6 +225,27 @@ Pausing does not remove pending messages. Normal broker expiry still applies, an
 Consumer control endpoints are internal in Aspire. The Web app uses `GET /control/status` and sends `X-ServiceBusDemo-Control: 1` on `POST /control/pause` and `POST /control/resume`. This header blocks ordinary cross-site form submissions; it is **not authentication**, and cross-origin access is not enabled. Do not expose this unauthenticated demo, **including its Web UI**, to untrusted users or networks.
 
 The Web frontend and both consumers accept only loopback hostnames by default (`localhost`, `127.0.0.1`, `[::1]`). For a different trusted setup, set `AllowedHosts` per app to an explicit semicolon-separated list of the hostnames it needs to accept, without ports or a wildcard. Host filtering does not authenticate callers.
+
+### Subscription depth in the emulator
+
+**Result: the management call responds, but does not provide usable active or dead-letter counts through the SDK.**
+Microsoft's [emulator overview and limitations](https://learn.microsoft.com/en-us/azure/service-bus-messaging/overview-emulator) describe .NET entity management, and the [local testing guide](https://learn.microsoft.com/en-us/azure/service-bus-messaging/test-locally-with-service-bus-emulator) specifies the separate HTTP management port (5300 by default). That does not guarantee that subscription runtime counts decode correctly.
+
+The AppHost launched with `dotnet run --project ServiceBusDemo.AppHost` selected `mcr.microsoft.com/azure-messaging/servicebus-emulator:2.0.0`. To keep it running for the probe, the same AppHost was started detached with `aspire start --apphost ServiceBusDemo.AppHost --no-build -lp https`. Docker was remote in this environment: host-loopback checks timed out or refused connections, so the probe shared the emulator container's network namespace and used `Endpoint=sb://127.0.0.1:5300;...;UseDevelopmentEmulator=true` for management and port 5672 for AMQP.
+
+With Azure.Messaging.ServiceBus 7.20.2, `ServiceBusAdministrationClient.GetSubscriptionRuntimePropertiesAsync` returned HTTP 200 on all three configured subscriptions. After sending with no receivers, completing shared messages and dead-lettering a broadcast copy, the SDK still reported `ActiveMessageCount=0` and `DeadLetterMessageCount=0` throughout. AMQP peek independently found two active messages and one dead-letter on `broadcast-events/consumer-one`, and three active messages on `broadcast-events/consumer-two`. The HTTP bodies had `MessageCount=3` and count details with nonstandard XML names (for example, `iqV` and `iqv`), not the named SDK count fields. This is not a startup failure or evidence of an empty subscription. `SubscriptionRuntimeProperties` also has no `ScheduledMessageCount` property; even with a future-dated send in the probe there was no named scheduled count available from this call.
+
+Home therefore shows **Estimated pending** and **Dead-letter: unavailable** for each subscription. It counts distinct acknowledged message IDs for the row's topic that have no matching report for that topic and subscription in the current delivery feed. Either consumer can satisfy the shared subscription's report; broadcast subscriptions are counted independently. There is no broker polling for these estimates.
+
+The estimate covers only sends acknowledged on this page, not external sends or sends in other tabs. Reports are best-effort, precede broker completion, and the feed retains only the most recent 200 reports. Clearing the feed or evicting an older report can increase the estimate; reloading loses this page's sent history.
+
+To walk through the estimate, start with a fresh Home page:
+
+1. Pause both consumers and wait for both badges to show **Paused**. Send a competing-consumer burst of two. Only the shared row should rise, to two.
+2. Resume Consumer One. Watch the shared row return to zero as its reports arrive.
+3. With Consumer Two still paused, send one publish/subscribe message. The `consumer-one` copy should quickly return to zero after its report; `consumer-two` should stay at one until you resume Consumer Two and its report arrives.
+
+Verified separately in Chromium against the running AppHost and emulator: the shared estimate rose from 0 to 2 with both consumers paused and returned to 0 after resuming Consumer One. A broadcast then left Consumer Two's estimate at 1 while Consumer One's was 0; resuming Consumer Two returned all three rows to 0. The UI sequence is also covered in bUnit with simulated control and delivery responses.
 
 ### Run the tests
 
@@ -259,9 +286,24 @@ curl -X POST "<producer-url>/routedMessage" \
 A routed request maps nonempty string `priority` and `region` values to the broker application properties `Priority` and `Region` respectively.
 A successful request returns `202 Accepted` with the generated `messageId` and topic name. The API rejects an empty message with `400 Bad Request`.
 
+Both routes also accept optional `subject`, `correlationId`, and a string-valued `applicationProperties` object. Existing message-only requests still work, and each optional field can be omitted or set to `null`. For example:
+
+```json
+{
+  "message": "Order 42 was placed",
+  "subject": "Order placed",
+  "correlationId": "order-42",
+  "applicationProperties": { "Priority": "High", "Region": "West" }
+}
+```
+
+Subject, CorrelationId, and application-property keys are limited to 128 characters; property values are limited to 1024. Supplied strings must contain a non-whitespace character, and property values cannot be null. Valid text is preserved without trimming. Invalid metadata returns `400 Bad Request` without sending. CorrelationId is set through the API, not the UI.
+
 ## Delivery event ingest
 
 `POST /api/deliveries` on **webfrontend** accepts a JSON [`DeliveryEvent`](ServiceBusDemo.ServiceDefaults/DeliveryEvent.cs) and returns `202 Accepted` for a valid event. After logging a delivery, each consumer queues a report that includes the broker's delivery count. Each consumer can queue up to 256 reports and sends them in the background with a two-second timeout and no retries. If Web is unavailable or the reporting queue is full, reports may be lost without affecting Service Bus processing. Pending reports are discarded at shutdown.
+
+Reports may include the broker's `subject`, `correlationId`, and `applicationProperties`. Application-property values from other producers are formatted as strings for display; older reports can omit all metadata.
 
 The feed keeps the most recent 200 events in memory and loses them when the Web app restarts. The endpoint is unauthenticated and intended only for the local demo. Do not expose it publicly: any caller can submit events, and the 200-event cap limits the number of entries, not the size of each event.
 

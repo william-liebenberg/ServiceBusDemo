@@ -240,11 +240,14 @@ public class WebTests
         context.Services.AddSingleton(feed);
         var home = context.Render<Home>();
         home.Find("#message").Change("Aspire burst smoke test");
+        home.Find("#advanced-priority").Change("High");
         home.Find("#burst-count").Input("3");
 
         await home.Find("#burst-form").SubmitAsync().WaitAsync(token);
         home.WaitForAssertion(() => Assert.Equal("Reported deliveries: 3 / 3 expected", home.Find("#burst-total").TextContent),
             TimeSpan.FromSeconds(15));
+        Assert.Equal(3, feed.Snapshot().Count(report => report.Body == "Aspire burst smoke test" &&
+            report.ApplicationProperties?.GetValueOrDefault("Priority") == "High"));
 
         var pubSub = home.Find("#pattern-pubsub");
         pubSub.Change(((IHtmlInputElement)pubSub).Value);

@@ -1,4 +1,5 @@
 using Azure.Messaging.ServiceBus;
+using ServiceBusDemo.ServiceDefaults;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -28,53 +29,87 @@ app.UseHttpsRedirection();
 
 // Competing consumers: published to a topic whose single subscription is shared by all consumers.
 app.MapPost("/sendMessage", (SendMessageRequest request, [FromKeyedServices(SenderKeys.BusinessEvents)] ServiceBusSender sender, ILogger<Program> logger, CancellationToken cancellationToken) =>
-    PublishAsync(request.Message, sender, logger, cancellationToken))
+    PublishAsync(request, sender, logger, cancellationToken))
 .WithName("SendMessage");
 
 // Publish/subscribe: published to a topic where each consumer has its own subscription.
 app.MapPost("/broadcastMessage", (SendMessageRequest request, [FromKeyedServices(SenderKeys.BroadcastEvents)] ServiceBusSender sender, ILogger<Program> logger, CancellationToken cancellationToken) =>
-    PublishAsync(request.Message, sender, logger, cancellationToken))
+    PublishAsync(request, sender, logger, cancellationToken))
 .WithName("BroadcastMessage");
 
 // Topic filters: the broker routes independently on each subscription's rule.
-app.MapPost("/routedMessage", (RoutedMessageRequest request, [FromKeyedServices(SenderKeys.RoutedEvents)] ServiceBusSender sender, ILogger<Program> logger, CancellationToken cancellationToken) =>
-    PublishAsync(request.Message, sender, logger, cancellationToken, request.Priority, request.Region))
+app.MapPost("/routedMessage", (SendMessageRequest request, [FromKeyedServices(SenderKeys.RoutedEvents)] ServiceBusSender sender, ILogger<Program> logger, CancellationToken cancellationToken) =>
+    PublishAsync(request, sender, logger, cancellationToken, routed: true))
 .WithName("RoutedMessage");
 
 app.MapDefaultEndpoints();
 
 app.Run();
 
-static async Task<IResult> PublishAsync(string body, ServiceBusSender sender, ILogger logger, CancellationToken cancellationToken,
-    string? priority = null, string? region = null)
+static async Task<IResult> PublishAsync(SendMessageRequest request, ServiceBusSender sender, ILogger logger, CancellationToken cancellationToken,
+    bool routed = false)
 {
-    if (string.IsNullOrWhiteSpace(body))
+    if (string.IsNullOrWhiteSpace(request.Message))
     {
         return Results.BadRequest("Message is required.");
     }
 
-    var message = new ServiceBusMessage(body)
+    if (request.Subject is not null && !MessageMetadataRules.IsValid(request.Subject, MessageMetadataRules.NameLimit))
+    {
+        return Results.BadRequest($"Subject must be non-blank and at most {MessageMetadataRules.NameLimit} characters.");
+    }
+
+    if (request.CorrelationId is not null && !MessageMetadataRules.IsValid(request.CorrelationId, MessageMetadataRules.NameLimit))
+    {
+        return Results.BadRequest($"CorrelationId must be non-blank and at most {MessageMetadataRules.NameLimit} characters.");
+    }
+
+    if (request.ApplicationProperties is { } properties && properties.Any(property =>
+            !MessageMetadataRules.IsValid(property.Key, MessageMetadataRules.NameLimit) ||
+            !MessageMetadataRules.IsValid(property.Value, MessageMetadataRules.ValueLimit)))
+    {
+        return Results.BadRequest($"Application property keys and values must be non-blank and at most {MessageMetadataRules.NameLimit} and {MessageMetadataRules.ValueLimit} characters, respectively.");
+    }
+
+    var message = new ServiceBusMessage(request.Message)
     {
         MessageId = Guid.NewGuid().ToString(),
         ContentType = "text/plain"
     };
-    if (!string.IsNullOrEmpty(priority))
+    if (request.Subject is not null)
     {
-        message.ApplicationProperties["Priority"] = priority;
+        message.Subject = request.Subject;
     }
-    if (!string.IsNullOrEmpty(region))
+    if (request.CorrelationId is not null)
     {
-        message.ApplicationProperties["Region"] = region;
+        message.CorrelationId = request.CorrelationId;
+    }
+    if (request.ApplicationProperties is not null)
+    {
+        foreach (var (key, value) in request.ApplicationProperties)
+        {
+            message.ApplicationProperties.Add(key, value);
+        }
+    }
+    if (routed && !string.IsNullOrEmpty(request.Priority))
+    {
+        message.ApplicationProperties["Priority"] = request.Priority;
+    }
+    if (routed && !string.IsNullOrEmpty(request.Region))
+    {
+        message.ApplicationProperties["Region"] = request.Region;
     }
 
     await sender.SendMessageAsync(message, cancellationToken);
-    logger.LogInformation("Sent message {MessageId} to topic {Topic}: {Body}", message.MessageId, sender.EntityPath, body);
+    logger.LogInformation("Sent message {MessageId} to topic {Topic}: {Body}", message.MessageId, sender.EntityPath, request.Message);
 
     return Results.Accepted(value: new { message.MessageId, Topic = sender.EntityPath });
 }
 
-record SendMessageRequest(string Message);
-record RoutedMessageRequest(string Message, string? Priority = null, string? Region = null);
+record SendMessageRequest(string Message, string? Subject = null, string? CorrelationId = null,
+    Dictionary<string, string>? ApplicationProperties = null, string? Priority = null, string? Region = null);
+
+public sealed class ProducerEndpointAssembly;
 
 static class SenderKeys
 {

@@ -6,7 +6,7 @@ using Microsoft.Extensions.Logging;
 
 namespace ServiceBusDemo.ServiceDefaults;
 
-public abstract class ControlledMessageConsumer : BackgroundService
+public abstract partial class ControlledMessageConsumer : BackgroundService
 {
     private readonly ServiceBusClient _client;
     private readonly ILogger _logger;
@@ -203,13 +203,16 @@ public abstract class ControlledMessageConsumer : BackgroundService
     private Task ReportDeliveryAsync(ProcessorSlot slot, ProcessMessageEventArgs args)
     {
         var receivedAt = DateTimeOffset.UtcNow;
-        var body = Encoding.UTF8.GetString(args.Message.Body.ToArray());
+        var message = args.Message;
+        var body = Encoding.UTF8.GetString(message.Body.ToArray());
         var consumer = _status.Consumer;
         _logger.LogInformation(
             "[{Pattern}] {Consumer} received message {MessageId} from {Topic}/{Subscription}: {Body}",
-            slot.Pattern, consumer, args.Message.MessageId, slot.Topic, slot.Subscription, body);
-        _reports.Enqueue(new DeliveryEvent(args.Message.MessageId, slot.Pattern, consumer, slot.Topic,
-            slot.Subscription, body, args.Message.DeliveryCount, receivedAt));
+            slot.Pattern, consumer, message.MessageId, slot.Topic, slot.Subscription, body);
+        var properties = message.ApplicationProperties;
+        _reports.Enqueue(new DeliveryEvent(message.MessageId, slot.Pattern, consumer, slot.Topic,
+            slot.Subscription, body, message.DeliveryCount, receivedAt, message.Subject, message.CorrelationId,
+            properties.Count == 0 ? null : properties.ToDictionary(item => item.Key, item => FormatProperty(item.Value))));
         return Task.CompletedTask;
     }
 

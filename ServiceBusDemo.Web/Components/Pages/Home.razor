@@ -35,7 +35,6 @@
 
 <EditForm EditContext="messageContext" OnValidSubmit="SendAsync" FormName="send-message">
     <DataAnnotationsValidator />
-
     <fieldset class="mb-3" disabled="@Busy">
         <legend class="form-label fs-6">Pattern</legend>
         <InputRadioGroup @bind-Value="model.Pattern">
@@ -99,6 +98,63 @@
         </div>
     </div>
 
+    <details class="mb-3" open="@advancedOpen">
+        <summary id="advanced-heading" @onclick="() => advancedOpen = !advancedOpen" @onclick:preventDefault>Advanced</summary>
+        <div id="advanced-errors" class="text-danger-emphasis" role="alert" aria-atomic="true" tabindex="-1" @ref="advancedErrorSummary">
+            @if (metadataErrors.Count > 0)
+            {
+                <p class="mb-1">Check the Advanced settings before sending:</p>
+                <ul>
+                    @foreach (var error in metadataErrors)
+                    {
+                        <li>@error</li>
+                    }
+                </ul>
+            }
+        </div>
+        <fieldset class="my-2" disabled="@Busy" aria-labelledby="advanced-heading" aria-describedby="advanced-errors">
+            <p class="text-body-secondary">Optional metadata for single sends and bursts.</p>
+            <div class="metadata-fields mb-2">
+                <div>
+                    <label class="form-label" for="advanced-subject">Subject</label>
+                    <input class="form-control" id="advanced-subject" @bind="subject" @bind:event="oninput" @bind:after="RevalidateMetadata" />
+                </div>
+                <div>
+                    <label class="form-label" for="advanced-priority">Priority</label>
+                    <select class="form-select" id="advanced-priority" @bind="priority" @bind:after="RevalidateMetadata">
+                        <option value="">Not set</option>
+                        <option>Low</option>
+                        <option>Normal</option>
+                        <option>High</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="form-label" for="advanced-region">Region</label>
+                    <input class="form-control" id="advanced-region" @bind="region" @bind:event="oninput" @bind:after="RevalidateMetadata" />
+                </div>
+            </div>
+            @for (var i = 0; i < propertyRows.Count; i++)
+            {
+                var row = propertyRows[i];
+                var number = i + 1;
+                var keyId = $"property-key-{row.Id}";
+                var valueId = $"property-value-{row.Id}";
+                <div class="metadata-fields align-items-end mb-2" @key="row">
+                    <div>
+                        <label class="form-label" for="@keyId">Property @number key</label>
+                        <input class="form-control" id="@keyId" @ref="row.KeyInput" @bind="row.Key" @bind:event="oninput" @bind:after="RevalidateMetadata" />
+                    </div>
+                    <div>
+                        <label class="form-label" for="@valueId">Property @number value</label>
+                        <input class="form-control" id="@valueId" @bind="row.Value" @bind:event="oninput" @bind:after="RevalidateMetadata" />
+                    </div>
+                    <button type="button" class="btn btn-outline-secondary" aria-label="Remove property @number" @onclick="() => RemoveProperty(row)">Remove</button>
+                </div>
+            }
+            <button type="button" id="add-property" class="btn btn-outline-secondary" @onclick="AddProperty" @ref="addPropertyButton">Add property</button>
+        </fieldset>
+    </details>
+
     <button type="submit" class="btn btn-primary" disabled="@Busy">
         @if (isSending)
         {
@@ -129,7 +185,7 @@
             <div>
                 <div class="form-check">
                     <input id="burst-paced" type="checkbox" class="form-check-input" @bind="fixedRate" />
-                    <label class="form-check-label" for="burst-paced">Limit rate (unchecked: as fast as possible)</label>
+                    <label for="burst-paced" class="form-check-label">Limit rate (unchecked: as fast as possible)</label>
                 </div>
                 @if (fixedRate)
                 {
@@ -186,6 +242,28 @@
             Repeat reports from the same consumer are counted once per message, but redelivery to another competing consumer can put the total above expected.</p>
     </div>
 }
+
+<section class="mt-4" aria-labelledby="depth-heading" aria-describedby="depth-note">
+    <h2 id="depth-heading" class="h5">Subscription depth</h2>
+    <div id="depth-status" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true">@depthAnnouncement</div>
+    <ul class="list-group mb-2">
+        @for (var index = 0; index < depthSubscriptions.Length; index++)
+        {
+            var (topic, subscription) = depthSubscriptions[index];
+            var count = pendingEstimates[index] = EstimatePending(topic, subscription, snapshot);
+            <li class="list-group-item depth-row">
+                <div><strong>Topic:</strong> <code>@topic</code> <strong>Subscription:</strong> <code>@subscription</code></div>
+                <span class="depth-pending">Estimated pending: @count</span>
+                <span class="d-block">Dead-letter: unavailable</span>
+            </li>
+        }
+    </ul>
+    <p id="depth-note" class="text-body-secondary">
+        Estimates cover acknowledged sends in this page session only, not external sends. Delivery reports are best-effort,
+        arrive before broker completion, and only the latest 200 are retained. Clearing the feed or reports aging out of it
+        can increase the estimate. Reloading loses this page’s sent history.
+    </p>
+</section>
 
 <section class="deliveries mt-4" aria-labelledby="deliveries-heading">
     <div class="d-flex align-items-center justify-content-between mb-2">
@@ -254,6 +332,7 @@
                             <dt>Received (local time)</dt>
                             <dd class="mb-0"><time datetime="@receivedAt.ToString("O")">@receivedAt.ToString("G") (UTC@(receivedAt.ToString("zzz")))</time></dd>
                         </dl>
+                        <MessageMetadata Subject="@delivery.Subject" CorrelationId="@delivery.CorrelationId" ApplicationProperties="delivery.ApplicationProperties" />
                     </article>
                 }
             </section>
@@ -275,6 +354,7 @@
                     <th>Topic</th>
                     <th>Message ID</th>
                     <th>Message</th>
+                    <th>Metadata</th>
                     <th>Consumers</th>
                     @if (hasRoutedMessages)
                     {
@@ -294,7 +374,10 @@
                         <td>@(sent.Pattern == MessagingPattern.PubSub ? "Pub/sub" : PatternLabel(sent.Pattern.ToString()))</td>
                         <td><code>@sent.Topic</code></td>
                         <td><code>@sent.MessageId</code></td>
-                        <td>@sent.Message</td>
+                        <td>@sent.Request.Message</td>
+                        <td class="sent-metadata">
+                            <MessageMetadata Subject="@sent.Request.Subject" CorrelationId="@sent.Request.CorrelationId" ApplicationProperties="sent.Request.ApplicationProperties" />
+                        </td>
                         <td>@(recipientLabels.Length > 0 ? recipientLabels : "None reported")</td>
                         @if (hasRoutedMessages)
                         {
@@ -305,7 +388,7 @@
                                     <dl class="mb-0">
                                         <dt>Priority</dt>
                                         <dd class="mb-0">
-                                            @if (sent.Priority is { } priority)
+                                            @if ((sent.Request.Priority ?? sent.Request.ApplicationProperties?.GetValueOrDefault("Priority")) is { } priority)
                                             {
                                                 <code>"@priority"</code>
                                             }
@@ -316,7 +399,7 @@
                                         </dd>
                                         <dt>Region</dt>
                                         <dd class="mb-0">
-                                            @if (sent.Region is { } region)
+                                            @if ((sent.Request.Region ?? sent.Request.ApplicationProperties?.GetValueOrDefault("Region")) is { } region)
                                             {
                                                 <code>"@region"</code>
                                             }
@@ -494,22 +577,33 @@
             return;
         }
 
-        isSending = true;
         statusMessage = null;
+        var request = SnapshotRequest(model.Message!.Trim());
+        if (request is null)
+        {
+            FocusMetadataErrors();
+            return;
+        }
 
+        isSending = true;
         try
         {
-            var message = model.Message!.Trim();
             var pattern = model.Pattern;
-            var priority = pattern == MessagingPattern.TopicFilters && !string.IsNullOrEmpty(model.Priority) ? model.Priority : null;
-            var region = pattern == MessagingPattern.TopicFilters && !string.IsNullOrEmpty(model.Region) ? model.Region : null;
-            var result = await ProducerApi.SendMessageAsync(message, pattern, pageLifetime.Token, priority, region);
+            if (pattern == MessagingPattern.TopicFilters)
+            {
+                request = request with
+                {
+                    Priority = string.IsNullOrEmpty(model.Priority) ? null : model.Priority,
+                    Region = string.IsNullOrEmpty(model.Region) ? null : model.Region
+                };
+            }
+            var result = await ProducerApi.SendMessageAsync(request, pattern, pageLifetime.Token);
             if (disposed)
             {
                 return;
             }
 
-            sentMessages.Insert(0, new SentMessage(result.MessageId, pattern, result.Topic, message, DateTimeOffset.UtcNow, priority, region));
+            sentMessages.Insert(0, new SentMessage(result.MessageId, pattern, result.Topic, request, DateTimeOffset.UtcNow));
             statusMessage = $"Message {result.MessageId} published to '{result.Topic}'.";
             isError = false;
         }
@@ -541,6 +635,5 @@
 
     private sealed record DeliveryCard(long Sequence, DeliveryEvent Delivery);
     private sealed record CardInteraction(DeliveryCard Card, long Order);
-    private sealed record SentMessage(string MessageId, MessagingPattern Pattern, string Topic, string Message, DateTimeOffset SentAt,
-        string? Priority = null, string? Region = null);
+    private sealed record SentMessage(string MessageId, MessagingPattern Pattern, string Topic, SendMessageRequest Request, DateTimeOffset SentAt);
 }

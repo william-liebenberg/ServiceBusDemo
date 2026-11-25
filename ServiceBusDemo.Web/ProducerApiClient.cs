@@ -4,8 +4,13 @@ namespace ServiceBusDemo.Web;
 
 public class ProducerApiClient(HttpClient httpClient)
 {
-    public async Task<SendMessageResult> SendMessageAsync(string message, MessagingPattern pattern,
-        CancellationToken cancellationToken = default, string? priority = null, string? region = null)
+    public Task<SendMessageResult> SendMessageAsync(string message, MessagingPattern pattern, CancellationToken cancellationToken = default,
+        string? priority = null, string? region = null) =>
+        SendMessageAsync(new SendMessageRequest(message,
+            Priority: pattern == MessagingPattern.TopicFilters && !string.IsNullOrEmpty(priority) ? priority : null,
+            Region: pattern == MessagingPattern.TopicFilters && !string.IsNullOrEmpty(region) ? region : null), pattern, cancellationToken);
+
+    public async Task<SendMessageResult> SendMessageAsync(SendMessageRequest request, MessagingPattern pattern, CancellationToken cancellationToken = default)
     {
         var endpoint = pattern switch
         {
@@ -15,10 +20,7 @@ public class ProducerApiClient(HttpClient httpClient)
             _ => throw new ArgumentOutOfRangeException(nameof(pattern), pattern, null)
         };
 
-        using var response = pattern == MessagingPattern.TopicFilters
-            ? await httpClient.PostAsJsonAsync(endpoint, new RoutedMessageRequest(message,
-                string.IsNullOrEmpty(priority) ? null : priority, string.IsNullOrEmpty(region) ? null : region), cancellationToken)
-            : await httpClient.PostAsJsonAsync(endpoint, new SendMessageRequest(message), cancellationToken);
+        using var response = await httpClient.PostAsJsonAsync(endpoint, request, cancellationToken);
 
         if (!response.IsSuccessStatusCode)
         {
@@ -33,9 +35,6 @@ public class ProducerApiClient(HttpClient httpClient)
             ?? throw new InvalidOperationException("Producer API returned an empty response.");
     }
 
-    private sealed record RoutedMessageRequest(string Message,
-        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Priority,
-        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Region);
 }
 
 public enum MessagingPattern
@@ -45,6 +44,11 @@ public enum MessagingPattern
     TopicFilters
 }
 
-public record SendMessageRequest(string Message);
+public record SendMessageRequest(string Message,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Subject = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? CorrelationId = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IReadOnlyDictionary<string, string>? ApplicationProperties = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Priority = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Region = null);
 
 public record SendMessageResult(string MessageId, string Topic);

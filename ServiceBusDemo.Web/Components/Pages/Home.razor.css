@@ -107,3 +107,13 @@
     outline: 3px solid var(--bs-emphasis-color);
     outline-offset: 2px;
 }
+
+.metadata-fields {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 11rem), 1fr));
+    gap: 0.5rem 1rem;
+}
+
+.sent-metadata {
+    min-inline-size: 10rem;
+}

@@ -12,6 +12,46 @@ namespace ServiceBusDemo.Tests;
 
 public class HomeBurstTests
 {
+    [Fact]
+    public async Task AdvancedValuesAreValidatedAndSnapshottedForTheEntireBurst()
+    {
+        await using var demo = new Demo();
+        demo.Home.Find("#advanced-subject").Input("Burst subject");
+        demo.Home.Find("#advanced-region").Input("West");
+        demo.Home.Find("#add-property").Click();
+        demo.Home.Find("#property-key-1").Input("region");
+        demo.Home.Find("#property-value-1").Input("East");
+        await demo.Start();
+        Assert.Equal(0, demo.Handler.RequestCount);
+        Assert.Contains("duplicate key: region", demo.Home.Find("#advanced-errors").TextContent);
+
+        demo.Home.Find("#property-key-1").Input("Group");
+        demo.Home.Find("#add-property").Click();
+        demo.Home.Find("#property-key-2").Input("group");
+        demo.Home.Find("#property-value-2").Input("Other");
+        await demo.Start();
+        Assert.Equal(0, demo.Handler.RequestCount);
+        Assert.Contains("duplicate key: group", demo.Home.Find("#advanced-errors").TextContent);
+
+        demo.Home.Find("button[aria-label='Remove property 2']").Click();
+        var sending = demo.Start();
+        var first = await demo.Handler.NextAsync();
+        demo.Home.WaitForElement("fieldset[aria-labelledby=advanced-heading][disabled]");
+        first.Accept("first");
+        var second = await demo.Handler.NextAsync();
+        foreach (var request in new[] { first.Payload, second.Payload })
+        {
+            Assert.Equal("Burst subject", request.Subject);
+            Assert.Equal("West", request.ApplicationProperties!["Region"]);
+            Assert.Equal("East", request.ApplicationProperties["Group"]);
+        }
+        second.Accept("second");
+        await sending.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        demo.Home.Find("#property-value-1").Input("Later value");
+        Assert.Equal(2, demo.Home.FindAll(".sent-metadata").Count);
+        Assert.All(demo.Home.FindAll(".sent-metadata"), cell => Assert.Contains("Group: East", cell.TextContent));
+    }
+
     [Theory]
     [InlineData(false, "/sendMessage", "CompetingConsumers", 2)]
     [InlineData(true, "/broadcastMessage", "PubSub", 4)]
@@ -414,8 +454,9 @@ public class HomeBurstTests
         }
     }
 
-    private sealed record Request(string Route, string Message, long Started, CancellationToken Token)
+    private sealed record Request(string Route, SendMessageRequest Payload, long Started, CancellationToken Token)
     {
+        public string Message => Payload.Message;
         public TaskCompletionSource<HttpResponseMessage> Response { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public void Accept(string id) => Response.SetResult(new(HttpStatusCode.Accepted) { Content = JsonContent.Create(new SendMessageResult(id, "topic")) });
     }
@@ -433,7 +474,7 @@ public class HomeBurstTests
         {
             var started = Stopwatch.GetTimestamp();
             var body = await request.Content!.ReadFromJsonAsync<SendMessageRequest>(cancellationToken);
-            var pending = new Request(request.RequestUri!.AbsolutePath, body!.Message, started, cancellationToken);
+            var pending = new Request(request.RequestUri!.AbsolutePath, body!, started, cancellationToken);
             Interlocked.Increment(ref _count);
             await _requests.Writer.WriteAsync(pending, cancellationToken);
             return await pending.Response.Task.WaitAsync(cancellationToken);
