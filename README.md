@@ -198,9 +198,12 @@ To observe the difference, send one message with each pattern and look at the co
 
 ### Add message metadata
 
-Open **Advanced** to set a Subject, select a Priority (`Low`, `Normal`, or `High`), enter a Region, or add and remove custom key/value rows. Blank Subject and Region and an unselected Priority are omitted. Priority and Region are sent as application properties named `Priority` and `Region`. Custom rows require both a key and a value; keys cannot duplicate another row or a populated dedicated field, ignoring case.
+- **Competing consumers** and **Publish/subscribe**: In **Advanced**, select an optional **Priority** (`Low`, `Normal`, or `High`) and enter an optional **Region**. These settings apply to single sends and bursts. A burst captures the Advanced settings once and uses them for every message.
+- **Topic filters**: Enter optional **Priority** and **Region** values under **Routing properties**, not **Advanced**. Use these fields rather than custom rows named `Priority` or `Region`. Burst sending is disabled; send one message at a time.
 
-The same controls apply to single sends and bursts. A burst captures the Advanced settings once before sending and uses them for every message. **Sent this session** shows the metadata captured for each acknowledged send; delivery cards show the metadata the consumers actually received from the broker.
+For any pattern, use **Advanced** to set an optional **Subject** or add and remove custom key/value rows. Blank Subject and Region and a blank or unselected Priority field are omitted. The dedicated fields send `Priority` and `Region` as application properties. Custom rows require both a key and a value; keys cannot duplicate another row or a populated Advanced field for Priority or Region, ignoring case.
+
+**Sent this session** shows the metadata captured for each acknowledged send; delivery cards show the metadata the consumers actually received from the broker.
 
 ### Try a burst
 
