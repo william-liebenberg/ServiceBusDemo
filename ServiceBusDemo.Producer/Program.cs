@@ -8,9 +8,11 @@ builder.AddAzureServiceBusClient(connectionName: "messaging");
 
 var topicName = builder.Configuration["ServiceBus:TopicName"] ?? "business-events";
 var broadcastTopicName = builder.Configuration["ServiceBus:BroadcastTopicName"] ?? "broadcast-events";
+var routedTopicName = builder.Configuration["ServiceBus:RoutedTopicName"] ?? "routed-events";
 
 builder.Services.AddKeyedSingleton(SenderKeys.BusinessEvents, (sp, _) => sp.GetRequiredService<ServiceBusClient>().CreateSender(topicName));
 builder.Services.AddKeyedSingleton(SenderKeys.BroadcastEvents, (sp, _) => sp.GetRequiredService<ServiceBusClient>().CreateSender(broadcastTopicName));
+builder.Services.AddKeyedSingleton(SenderKeys.RoutedEvents, (sp, _) => sp.GetRequiredService<ServiceBusClient>().CreateSender(routedTopicName));
 
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
 builder.Services.AddOpenApi();
@@ -35,11 +37,17 @@ app.MapPost("/broadcastMessage", (SendMessageRequest request, [FromKeyedServices
     PublishAsync(request, sender, logger, cancellationToken))
 .WithName("BroadcastMessage");
 
+// Topic filters: the broker routes independently on each subscription's rule.
+app.MapPost("/routedMessage", (SendMessageRequest request, [FromKeyedServices(SenderKeys.RoutedEvents)] ServiceBusSender sender, ILogger<Program> logger, CancellationToken cancellationToken) =>
+    PublishAsync(request, sender, logger, cancellationToken, routed: true))
+.WithName("RoutedMessage");
+
 app.MapDefaultEndpoints();
 
 app.Run();
 
-static async Task<IResult> PublishAsync(SendMessageRequest request, ServiceBusSender sender, ILogger logger, CancellationToken cancellationToken)
+static async Task<IResult> PublishAsync(SendMessageRequest request, ServiceBusSender sender, ILogger logger, CancellationToken cancellationToken,
+    bool routed = false)
 {
     if (string.IsNullOrWhiteSpace(request.Message))
     {
@@ -68,7 +76,6 @@ static async Task<IResult> PublishAsync(SendMessageRequest request, ServiceBusSe
         MessageId = Guid.NewGuid().ToString(),
         ContentType = "text/plain"
     };
-
     if (request.Subject is not null)
     {
         message.Subject = request.Subject;
@@ -84,6 +91,14 @@ static async Task<IResult> PublishAsync(SendMessageRequest request, ServiceBusSe
             message.ApplicationProperties.Add(key, value);
         }
     }
+    if (routed && !string.IsNullOrEmpty(request.Priority))
+    {
+        message.ApplicationProperties["Priority"] = request.Priority;
+    }
+    if (routed && !string.IsNullOrEmpty(request.Region))
+    {
+        message.ApplicationProperties["Region"] = request.Region;
+    }
 
     await sender.SendMessageAsync(message, cancellationToken);
     logger.LogInformation("Sent message {MessageId} to topic {Topic}: {Body}", message.MessageId, sender.EntityPath, request.Message);
@@ -92,7 +107,7 @@ static async Task<IResult> PublishAsync(SendMessageRequest request, ServiceBusSe
 }
 
 record SendMessageRequest(string Message, string? Subject = null, string? CorrelationId = null,
-    Dictionary<string, string>? ApplicationProperties = null);
+    Dictionary<string, string>? ApplicationProperties = null, string? Priority = null, string? Region = null);
 
 public sealed class ProducerEndpointAssembly;
 
@@ -100,4 +115,5 @@ static class SenderKeys
 {
     public const string BusinessEvents = "business-events";
     public const string BroadcastEvents = "broadcast-events";
+    public const string RoutedEvents = "routed-events";
 }

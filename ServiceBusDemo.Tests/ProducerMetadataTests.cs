@@ -13,6 +13,7 @@ public class ProducerMetadataTests
 {
     private const string BusinessEvents = "business-events";
     private const string BroadcastEvents = "broadcast-events";
+    private const string RoutedEvents = "routed-events";
 
     [Theory]
     [InlineData("/sendMessage", BusinessEvents)]
@@ -99,6 +100,32 @@ public class ProducerMetadataTests
             using var body = new StringContent(json, Encoding.UTF8, "application/json");
             return await client.PostAsync(endpoint, body, token);
         }
+    }
+
+    [Fact]
+    public async Task RoutedMessagesCombineMetadataAndRoutingFields()
+    {
+        var sender = new RecordingSender(RoutedEvents);
+        await using var factory = new WebApplicationFactory<ProducerEndpointAssembly>().WithWebHostBuilder(builder =>
+        {
+            builder.UseEnvironment("Production");
+            builder.ConfigureTestServices(services => services.AddKeyedSingleton<ServiceBusSender>(RoutedEvents, sender));
+        });
+        using var client = factory.CreateClient(new() { BaseAddress = new Uri("https://localhost") });
+        using var response = await client.PostAsJsonAsync("/routedMessage", new
+        {
+            message = "Order", subject = "orders", correlationId = "42",
+            priority = "High", region = "EU",
+            applicationProperties = new Dictionary<string, string> { ["Priority"] = "Low", ["Tag"] = "example" }
+        }, TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+        var message = Assert.Single(sender.Messages);
+        Assert.Equal("orders", message.Subject);
+        Assert.Equal("42", message.CorrelationId);
+        Assert.Equal("High", message.ApplicationProperties["Priority"]);
+        Assert.Equal("EU", message.ApplicationProperties["Region"]);
+        Assert.Equal("example", message.ApplicationProperties["Tag"]);
     }
 
     private sealed class RecordingSender(string topic) : ServiceBusSender

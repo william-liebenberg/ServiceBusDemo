@@ -17,7 +17,7 @@ public class DeliveryReportingTests
     [Theory]
     [InlineData("ConsumerOne", "consumer-one")]
     [InlineData("ConsumerTwo", "consumer-two")]
-    public async Task BothProcessorsPostTheBrokerDelivery(string consumerName, string broadcastSubscription)
+    public async Task EachProcessorPostsTheBrokerDelivery(string consumerName, string broadcastSubscription)
     {
         var token = TestContext.Current.CancellationToken;
         using var handler = new RecordingHandler(_ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.Accepted)));
@@ -29,14 +29,20 @@ public class DeliveryReportingTests
         await consumer.StartAsync(token);
         await consumer.ExecuteTask!.WaitAsync(WaitLimit, token);
 
-        Assert.Equal(2, bus.Processors.Count);
+        string[] routed = consumerName == "ConsumerOne" ? ["high-priority", "all"] : ["eu-orders"];
+        var count = 2 + routed.Length;
+        Assert.Equal(count, bus.Processors.Count);
         var before = DateTimeOffset.UtcNow;
         foreach (var processor in bus.Processors)
         {
             await processor.DeliverAsync(NewMessage(processor.Topic)).WaitAsync(WaitLimit, token);
         }
 
-        var requests = new[] { await handler.NextAsync(token), await handler.NextAsync(token) };
+        var requests = new List<Request>();
+        for (var i = 0; i < count; i++)
+        {
+            requests.Add(await handler.NextAsync(token));
+        }
         Assert.All(requests, request =>
         {
             Assert.Equal(HttpMethod.Post, request.Method);
@@ -54,9 +60,11 @@ public class DeliveryReportingTests
         });
         Assert.Equal(("CompetingConsumers", "business-events", "business-events", "business-events"), Routing(requests[0].Delivery));
         Assert.Equal(("PubSub", "broadcast-events", broadcastSubscription, "broadcast-events"), Routing(requests[1].Delivery));
+        Assert.Equal(routed.Select(subscription => ("TopicFilters", "routed-events", subscription, "routed-events")),
+            requests.Skip(2).Select(request => Routing(request.Delivery)));
         await consumer.StopAsync(token);
         await host.StopAsync(token);
-        Assert.Equal(2, handler.Attempts);
+        Assert.Equal(count, handler.Attempts);
         Assert.Empty(logs.Messages);
     }
 
