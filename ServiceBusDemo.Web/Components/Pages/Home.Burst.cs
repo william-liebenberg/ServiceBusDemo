@@ -109,7 +109,6 @@ public partial class Home
         }
 
         statusMessage = null;
-        burstStatus = null;
         var messageValid = await messageContext.ValidateAsync();
         if (disposed || Busy)
         {

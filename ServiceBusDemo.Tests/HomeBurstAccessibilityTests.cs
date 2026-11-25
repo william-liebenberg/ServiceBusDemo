@@ -28,20 +28,30 @@ public class HomeBurstAccessibilityTests
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task InvalidMetadataOpensAdvancedAndFocusesSummary(bool burst)
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task InvalidMetadataOpensAdvancedAndFocusesSummary(bool burst, bool previousBurstFailed)
     {
-        var handler = new AcceptMessage();
+        var handler = new AcceptMessage(failOnRequest: previousBurstFailed ? 2 : null);
         using var client = new HttpClient(handler) { BaseAddress = new Uri("http://producer.test") };
         await using var context = CreateContext(client, new DeliveryFeed());
         var home = context.Render<Home>();
         await home.Find("#message").ChangeAsync(new() { Value = "Order 42" });
-        await home.Find("#burst-count").InputAsync(new() { Value = "1" });
+        string? previousBurstStatus = null;
         if (burst)
         {
+            await home.Find("#burst-count").InputAsync(new() { Value = previousBurstFailed ? "2" : "1" });
             await home.Find("#burst-form").SubmitAsync();
-            Assert.Equal("Burst complete.", home.Find("#burst-status").TextContent);
+            previousBurstStatus = home.Find(".burst-results #burst-status").TextContent;
+            if (previousBurstFailed)
+            {
+                Assert.Contains("The producer may have accepted the last request despite the missing acknowledgement.", previousBurstStatus);
+            }
+            else
+            {
+                Assert.Equal("Burst complete.", previousBurstStatus);
+            }
         }
         const string singleForm = "form:has(#message)";
         await home.Find(singleForm).SubmitAsync();
@@ -52,6 +62,7 @@ public class HomeBurstAccessibilityTests
         await home.Find("#advanced-heading").ClickAsync();
         Assert.Empty(home.FindAll("details[open]"));
 
+        var requestCount = handler.RequestCount;
         var focusCalls = context.JSInterop.Invocations[FocusCall].Count;
         await home.Find(burst ? "#burst-form" : singleForm).SubmitAsync();
 
@@ -60,10 +71,10 @@ public class HomeBurstAccessibilityTests
         Assert.Equal(focusCalls + 1, context.JSInterop.Invocations[FocusCall].Count);
         LastFocusTarget(context);
         Assert.Empty(home.FindAll(".alert-success"));
-        Assert.Equal(burst ? 2 : 1, handler.RequestCount);
+        Assert.Equal(requestCount, handler.RequestCount);
         if (burst)
         {
-            Assert.Empty(home.Find("#burst-status").TextContent);
+            Assert.Equal(previousBurstStatus, home.Find(".burst-results #burst-status").TextContent);
             Assert.Equal("1", home.Find("#burst-progress").GetAttribute("value"));
         }
     }
@@ -160,13 +171,18 @@ public class HomeBurstAccessibilityTests
         return context;
     }
 
-    private sealed class AcceptMessage : HttpMessageHandler
+    private sealed class AcceptMessage(int? failOnRequest = null) : HttpMessageHandler
     {
         public int RequestCount { get; private set; }
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             RequestCount++;
+            if (RequestCount == failOnRequest)
+            {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable));
+            }
+
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.Accepted)
             {
                 Content = JsonContent.Create(new SendMessageResult("acknowledged", "topic"))
