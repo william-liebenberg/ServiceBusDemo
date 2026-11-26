@@ -135,6 +135,7 @@
             <button id="dead-letter-previous" type="button" class="btn btn-outline-secondary" disabled="@(deadLetterActing || deadLetterHistory.Count == 0)"
                     @onclick="() => MoveDeadLetterPageAsync(false)">Previous page</button>
             <button id="dead-letter-next" type="button" class="btn btn-outline-secondary" disabled="@(deadLetterActing || deadLetterPage?.NextFromSequenceNumber is null)"
+                    @onfocus="() => deadLetterNextFocused = true" @onblur="() => deadLetterNextFocused = false"
                     @onclick="() => MoveDeadLetterPageAsync(true)">Next page</button>
         </nav>
     }

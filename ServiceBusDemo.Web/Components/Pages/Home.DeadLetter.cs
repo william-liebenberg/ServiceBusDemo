@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Web;
+using Microsoft.JSInterop;
 
 namespace ServiceBusDemo.Web.Components.Pages;
 
@@ -22,6 +23,7 @@ public partial class Home
     private string? deadLetterActionStatus;
     private (DeadLetterSubscription Pair, long Sequence)? pendingPurge;
     private (DeadLetterSubscription Pair, long Sequence)? focusedDeadLetter;
+    private bool deadLetterNextFocused;
     private ElementReference messagingTab;
     private ElementReference deadLetterTab;
     private ElementReference deadLetterResult;
@@ -51,6 +53,7 @@ public partial class Home
         deadLetterVersion++;
         deadLetterLoading = false;
         pendingPurge = focusedDeadLetter = null;
+        deadLetterNextFocused = false;
         focusPurgeCancel = false;
         session?.Cancel();
         session?.Dispose();
@@ -99,6 +102,7 @@ public partial class Home
         deadLetterHistory.Clear();
         deadLetterCursor = null;
         deadLetterPage = null;
+        deadLetterNextFocused = false;
         pendingPurge = focusedDeadLetter = null;
         deadLetterActionStatus = deadLetterActionError = null;
         await RefreshDeadLettersAsync();
@@ -119,6 +123,7 @@ public partial class Home
         else return;
 
         deadLetterPage = null;
+        deadLetterNextFocused = false;
         pendingPurge = focusedDeadLetter = null;
         // Either paging button can become disabled. Focus the results before the new page arrives.
         focusAfterRender = (deadLetterResult, false);
@@ -146,6 +151,21 @@ public partial class Home
             if (deadLetterSelection is not { } pair) return;
             var page = await ProducerApi.PeekDeadLettersAsync(pair, deadLetterCursor, token);
             if (!IsCurrent()) return;
+            // Only Next can lose availability on a refresh; Previous depends on navigation history.
+            if (deadLetterNextFocused && deadLetterPage?.NextFromSequenceNumber is not null && page.NextFromSequenceNumber is null)
+            {
+                try
+                {
+                    // Move focus before rendering the native disabled attribute.
+                    await deadLetterResult.FocusAsync(preventScroll: false);
+                }
+                catch (JSDisconnectedException)
+                {
+                    // The browser can disconnect while focus is moving.
+                }
+                if (!IsCurrent()) return;
+                deadLetterNextFocused = false;
+            }
             deadLetterPage = page;
             if (pendingPurge is { } purge && !IsVisible(purge.Pair, purge.Sequence))
                 pendingPurge = null;
@@ -198,6 +218,7 @@ public partial class Home
         deadLetterVersion++;
         deadLetterLoading = false;
         deadLetterActing = true;
+        deadLetterNextFocused = false;
         pendingPurge = focusedDeadLetter = null;
         deadLetterActionError = null;
         deadLetterActionStatus = resubmit ? "Resubmitting…" : "Purging…";

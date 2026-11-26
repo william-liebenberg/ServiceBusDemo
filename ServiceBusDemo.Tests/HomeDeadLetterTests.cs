@@ -220,6 +220,43 @@ public class HomeDeadLetterTests
         }, TimeSpan.FromSeconds(5));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PollMovesFocusBeforeDisablingNextOnlyIfItIsStillFocused(bool blur)
+    {
+        var token = TestContext.Current.CancellationToken;
+        await using var context = new BunitContext();
+        using var handler = new Handler();
+        using var client = Client(context, handler);
+        var home = context.Render<Home>();
+        var nextEnabledAtFocus = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var focus = context.JSInterop.SetupVoid("Blazor._internal.domWrapper.focus", _ =>
+        {
+            nextEnabledAtFocus.TrySetResult(!home.Find("#dead-letter-next").HasAttribute("disabled"));
+            return true;
+        });
+        await home.Find("#dead-letter-tab").ClickAsync(new());
+        var pending = handler.HoldNextPeek();
+        await home.Find("#dead-letter-next").TriggerEventAsync("onfocus", new FocusEventArgs());
+        await pending.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5), token);
+        if (blur) await home.Find("#dead-letter-next").TriggerEventAsync("onblur", new FocusEventArgs());
+        pending.Response.SetResult(Json(new DeadLetterPage([], null)));
+
+        if (!blur)
+        {
+            Assert.True(await nextEnabledAtFocus.Task.WaitAsync(TimeSpan.FromSeconds(5), token));
+            focus.SetVoidResult();
+        }
+
+        home.WaitForAssertion(() =>
+        {
+            Assert.Single(home.FindAll("#dead-letter-next[disabled]"));
+            Assert.Contains("No dead letters on this page", home.Find("#dead-letter-status").TextContent);
+            Assert.Equal(blur ? 0 : 1, focus.Invocations.Count);
+        }, TimeSpan.FromSeconds(5));
+    }
+
     [Fact]
     public async Task PollsWhileActiveAndCancelsPendingPollOnDisposal()
     {
