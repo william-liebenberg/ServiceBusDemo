@@ -62,6 +62,65 @@ public class HomeDeadLetterTests
     }
 
     [Fact]
+    public async Task SingleSendKeepsMessagingPanelVisibleUntilTheOutcomeArrives()
+    {
+        var token = TestContext.Current.CancellationToken;
+        await using var context = new BunitContext();
+        var response = new PendingPeek();
+        using var handler = new Handler { PendingSend = response };
+        using var client = Client(context, handler);
+        var home = context.Render<Home>();
+        home.Find("#message").Change("a single send");
+        var send = home.Find("form:has(#message)").SubmitAsync();
+        await response.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5), token);
+        home.WaitForAssertion(() => Assert.Single(home.FindAll("#dead-letter-tab[aria-disabled=true]")));
+        Assert.Contains("after the send finishes", home.Find("#home-tab-status[role=status]").TextContent);
+
+        await home.Find("#dead-letter-tab").ClickAsync(new());
+        await home.Find("[role=tablist]").TriggerEventAsync("onkeydown", new KeyboardEventArgs { Key = "End" });
+        Assert.Single(home.FindAll("#messaging-panel:not([hidden])"));
+        Assert.Single(handler.Requests);
+
+        response.Response.SetResult(Json(new SendMessageResult("single-id", "business-events")));
+        await send;
+        Assert.Contains("Message single-id published", home.Find("#messaging-panel .alert[role=status]").TextContent);
+        Assert.Null(home.Find("#dead-letter-tab").GetAttribute("aria-disabled"));
+        await home.Find("[role=tablist]").TriggerEventAsync("onkeydown", new KeyboardEventArgs { Key = "End" });
+        Assert.Single(home.FindAll("#dead-letter-panel:not([hidden])"));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task PaginationMovesFocusToResultsWhileTheNewPageLoads(bool next)
+    {
+        var token = TestContext.Current.CancellationToken;
+        await using var context = new BunitContext();
+        using var handler = new Handler();
+        using var client = Client(context, handler);
+        var home = context.Render<Home>();
+        await home.Find("#dead-letter-tab").ClickAsync(new());
+        if (!next) await home.Find("#dead-letter-next").ClickAsync(new());
+        var focusCalls = context.JSInterop.Invocations["Blazor._internal.domWrapper.focus"].Count;
+        var selector = next ? "#dead-letter-next" : "#dead-letter-previous";
+        var pending = handler.HoldNextPeek();
+        var move = home.Find(selector).ClickAsync(new());
+        await pending.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5), token);
+        home.WaitForAssertion(() =>
+        {
+            Assert.Single(home.FindAll($"{selector}[disabled]"));
+            Assert.Contains("Loading dead letters", home.Find("[aria-label='Dead-letter results'][tabindex='-1']").TextContent);
+            Assert.Equal(focusCalls + 1, context.JSInterop.Invocations["Blazor._internal.domWrapper.focus"].Count);
+        });
+
+        pending.Response.SetResult(next ? Page(9) : Page(7, 9));
+        await move;
+        Assert.Contains(next ? "Sequence 9" : "Sequence 7", home.Find(".dead-letter-card h3").TextContent);
+        Assert.Single(home.FindAll($"{selector}[disabled]"));
+        Assert.Equal(focusCalls + 1, context.JSInterop.Invocations["Blazor._internal.domWrapper.focus"].Count);
+    }
+
+    [Fact]
     public async Task StaleSelectionAndPreActionPeeksCannotReplaceNewerResults()
     {
         var token = TestContext.Current.CancellationToken;
@@ -206,6 +265,7 @@ public class HomeDeadLetterTests
         public bool PeekError { get; set; }
         public bool EmptyPage { get; set; }
         public PendingPeek? Action { get; init; }
+        public PendingPeek? PendingSend { get; init; }
         public PendingPeek HoldNextPeek()
         {
             var peek = new PendingPeek();
@@ -217,6 +277,11 @@ public class HomeDeadLetterTests
         {
             var path = request.RequestUri!.AbsolutePath;
             Requests.Enqueue($"{request.Method} {request.RequestUri.PathAndQuery}");
+            if (path == "/sendMessage" && PendingSend is { } send)
+            {
+                send.Entered.SetResult(cancellationToken);
+                return send.Response.Task;
+            }
             if (path.EndsWith("/subscriptions")) return Task.FromResult(Json(Pairs));
             if (path.EndsWith("/resubmit"))
             {

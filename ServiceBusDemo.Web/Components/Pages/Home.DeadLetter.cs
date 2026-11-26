@@ -28,7 +28,7 @@ public partial class Home
     private ElementReference purgeCancel;
     private bool focusPurgeCancel;
     private bool DeadLetterActive => deadLetterSession is not null;
-    private bool TabSwitchBlocked => deadLetterActing || burstDelay is not null;
+    private bool TabSwitchBlocked => deadLetterActing || Busy;
 
     private async Task OpenDeadLettersAsync()
     {
@@ -120,6 +120,8 @@ public partial class Home
 
         deadLetterPage = null;
         pendingPurge = focusedDeadLetter = null;
+        // Either paging button can become disabled. Focus the results before the new page arrives.
+        focusAfterRender = (deadLetterResult, false);
         await RefreshDeadLettersAsync();
     }
 

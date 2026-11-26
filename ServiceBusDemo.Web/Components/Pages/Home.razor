@@ -48,6 +48,7 @@
 </div>
 <div id="home-tab-status" class="@(TabSwitchBlocked ? "text-body-secondary mb-3" : null)" role="status" aria-atomic="true">@(
     deadLetterActing ? "Switch tabs after the dead-letter action finishes." :
+    isSending ? "Switch tabs after the send finishes." :
     burstDelay is not null ? "Switch tabs after the burst finishes or is cancelled." : null)</div>
 
 <section id="dead-letter-panel" role="tabpanel" aria-labelledby="dead-letter-tab" tabindex="0" hidden="@(!DeadLetterActive)">
