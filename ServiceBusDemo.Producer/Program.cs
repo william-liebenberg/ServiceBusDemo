@@ -1,11 +1,21 @@
 using System.Text.Json.Serialization;
 using Azure.Messaging.ServiceBus;
+using ServiceBusDemo.Producer;
 using ServiceBusDemo.ServiceDefaults;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.AddServiceDefaults();
 builder.AddAzureServiceBusClient(connectionName: "messaging");
+// An unacknowledged recovery send or settlement must not be replayed automatically.
+builder.Services.AddKeyedSingleton(DeadLetterService.ClientKey, (sp, _) =>
+{
+    var connectionString = sp.GetRequiredService<IConfiguration>().GetConnectionString("messaging")
+        ?? throw new InvalidOperationException("Dead-letter recovery requires the 'messaging' connection string.");
+    return new ServiceBusClient(connectionString,
+        new ServiceBusClientOptions { RetryOptions = new ServiceBusRetryOptions { MaxRetries = 0 } });
+});
+builder.Services.AddSingleton<DeadLetterService>();
 
 var topicName = builder.Configuration["ServiceBus:TopicName"] ?? "business-events";
 var broadcastTopicName = builder.Configuration["ServiceBus:BroadcastTopicName"] ?? "broadcast-events";
@@ -14,6 +24,13 @@ var routedTopicName = builder.Configuration["ServiceBus:RoutedTopicName"] ?? "ro
 builder.Services.AddKeyedSingleton(SenderKeys.BusinessEvents, (sp, _) => sp.GetRequiredService<ServiceBusClient>().CreateSender(topicName));
 builder.Services.AddKeyedSingleton(SenderKeys.BroadcastEvents, (sp, _) => sp.GetRequiredService<ServiceBusClient>().CreateSender(broadcastTopicName));
 builder.Services.AddKeyedSingleton(SenderKeys.RoutedEvents, (sp, _) => sp.GetRequiredService<ServiceBusClient>().CreateSender(routedTopicName));
+RegisterRecoverySender(SenderKeys.BusinessEvents, topicName);
+RegisterRecoverySender(SenderKeys.BroadcastEvents, broadcastTopicName);
+RegisterRecoverySender(SenderKeys.RoutedEvents, routedTopicName);
+
+void RegisterRecoverySender(string key, string topic) =>
+    builder.Services.AddKeyedSingleton((DeadLetterService.ClientKey, key), (sp, _) =>
+        sp.GetRequiredKeyedService<ServiceBusClient>(DeadLetterService.ClientKey).CreateSender(topic));
 
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
 builder.Services.AddOpenApi();
@@ -43,6 +60,7 @@ app.MapPost("/routedMessage", (SendMessageRequest request, [FromKeyedServices(Se
     PublishAsync(request, sender, logger, cancellationToken, routed: true))
 .WithName("RoutedMessage");
 
+app.MapDeadLetters(topicName, broadcastTopicName, routedTopicName);
 app.MapDefaultEndpoints();
 
 app.Run();

@@ -222,8 +222,17 @@ public class HomeBurstTests
         var sending = demo.Start();
         var first = await demo.Handler.NextAsync();
         demo.Home.WaitForAssertion(() => Assert.Single(demo.Context.JSInterop.Invocations["Blazor._internal.domWrapper.focus"]));
+        Assert.Single(demo.Home.FindAll("#dead-letter-tab[aria-disabled=true]"));
+        Assert.Contains("after the burst finishes or is cancelled", demo.Home.Find("#home-tab-status[role=status]").TextContent);
+        await demo.Home.Find("#dead-letter-tab").ClickAsync(new());
+        await demo.Home.Find("[role=tablist]").TriggerEventAsync("onkeydown", new Microsoft.AspNetCore.Components.Web.KeyboardEventArgs { Key = "End" });
+        Assert.Single(demo.Context.JSInterop.Invocations["Blazor._internal.domWrapper.focus"]);
+        Assert.Single(demo.Home.FindAll("#messaging-panel:not([hidden]) #burst-progress"));
+        Assert.Equal("Sending burst…", demo.Status);
+
         await demo.Home.Find("#cancel-burst").ClickAsync(new());
         Assert.Single(demo.Home.FindAll("#cancel-burst[aria-disabled=true]:not([disabled])"));
+        Assert.Single(demo.Home.FindAll("#dead-letter-tab[aria-disabled=true]"));
         Assert.Contains("Cancellation pending", demo.Status);
         Assert.False(first.Token.IsCancellationRequested);
         Assert.False(sending.IsCompleted);
@@ -231,6 +240,8 @@ public class HomeBurstTests
         first.Accept("first");
         await sending.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         Assert.Single(demo.Home.FindAll("#send-burst[type=submit]:not([disabled]):not([aria-disabled])"));
+        Assert.Single(demo.Home.FindAll("#dead-letter-tab:not([aria-disabled])"));
+        Assert.Empty(demo.Home.Find("#home-tab-status").TextContent);
         Assert.Equal("Burst cancelled.", demo.Status);
         Assert.Equal(1, demo.Handler.RequestCount);
         Assert.Equal("1", demo.Progress);

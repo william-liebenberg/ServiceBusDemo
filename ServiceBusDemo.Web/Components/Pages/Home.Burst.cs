@@ -43,6 +43,12 @@ public partial class Home
         }
 
         QueueDepthAnnouncement();
+        if (focusPurgeCancel)
+        {
+            focusPurgeCancel = false;
+            if (DeadLetterActive && pendingPurge is not null)
+                focusAfterRender = (purgeCancel, false);
+        }
 
         if (focusAfterRender is not { } target || disposed)
         {
@@ -105,14 +111,14 @@ public partial class Home
 
     private async Task SendBurstAsync()
     {
-        if (disposed || Busy || IsTopicFilters)
+        if (disposed || DeadLetterActive || Busy || IsTopicFilters)
         {
             return;
         }
 
         statusMessage = null;
         var messageValid = await messageContext.ValidateAsync();
-        if (disposed || Busy || IsTopicFilters)
+        if (disposed || DeadLetterActive || Busy || IsTopicFilters)
         {
             return;
         }
@@ -225,17 +231,21 @@ public partial class Home
         }
     }
 
-    private async Task ConfirmBurstNavigationAsync(LocationChangingContext navigation)
+    private async Task ConfirmHomeNavigationAsync(LocationChangingContext navigation)
     {
-        if (burstDelay is null)
+        if (burstDelay is null && !deadLetterActing)
         {
             return;
         }
 
+        var warning = burstDelay is null ? DeadLetterNavigationWarning
+            : deadLetterActing ? $"{BurstNavigationWarning}\n\n{DeadLetterNavigationWarning}"
+            : BurstNavigationWarning;
+
         try
         {
             if (!await JS.InvokeAsync<bool>("confirm", navigation.CancellationToken,
-                $"{BurstNavigationWarning}\n\nLeave this page?"))
+                $"{warning}\n\nLeave this page?"))
             {
                 navigation.PreventNavigation();
             }

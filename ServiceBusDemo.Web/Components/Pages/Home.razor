@@ -25,13 +25,123 @@
 
 <PageTitle>Service Bus Demo</PageTitle>
 
-@if (burstDelay is not null)
+@if (burstDelay is not null || deadLetterActing)
 {
-    <NavigationLock ConfirmExternalNavigation="true" OnBeforeInternalNavigation="ConfirmBurstNavigationAsync" />
+    <NavigationLock ConfirmExternalNavigation="true" OnBeforeInternalNavigation="ConfirmHomeNavigationAsync" />
+}
+@if (deadLetterActing)
+{
+    <p id="dead-letter-navigation-warning" class="text-warning-emphasis" role="status">@DeadLetterNavigationWarning</p>
 }
 
 <h1>Service Bus Demo</h1>
 
+<div class="nav nav-tabs mb-3" role="tablist" aria-label="Service Bus demo views" @onkeydown="NavigateHomeTabsAsync">
+    <button type="button" class="nav-link @(!DeadLetterActive ? "active" : TabSwitchBlocked ? "disabled" : null)" id="messaging-tab" role="tab"
+            aria-controls="messaging-panel" aria-selected="@(!DeadLetterActive ? "true" : "false")"
+            aria-disabled="@(DeadLetterActive && TabSwitchBlocked ? "true" : null)"
+            tabindex="@(!DeadLetterActive ? 0 : -1)" @ref="messagingTab" @onclick="SwitchToMessaging">Messaging</button>
+    <button type="button" class="nav-link @(DeadLetterActive ? "active" : TabSwitchBlocked ? "disabled" : null)" id="dead-letter-tab" role="tab"
+            aria-controls="dead-letter-panel" aria-selected="@(DeadLetterActive ? "true" : "false")"
+            aria-disabled="@(!DeadLetterActive && TabSwitchBlocked ? "true" : null)"
+            tabindex="@(DeadLetterActive ? 0 : -1)" @ref="deadLetterTab" @onclick="OpenDeadLettersAsync">Dead-letter</button>
+</div>
+<div id="home-tab-status" class="@(TabSwitchBlocked ? "text-body-secondary mb-3" : null)" role="status" aria-atomic="true">@(
+    deadLetterActing ? "Switch tabs after the dead-letter action finishes." :
+    isSending ? "Switch tabs after the send finishes." :
+    burstDelay is not null ? "Switch tabs after the burst finishes or is cancelled." : null)</div>
+
+<section id="dead-letter-panel" role="tabpanel" aria-labelledby="dead-letter-tab" tabindex="0" hidden="@(!DeadLetterActive)">
+    @if (DeadLetterActive)
+    {
+        <h2 class="h5">Dead-letter messages</h2>
+        <p id="dead-letter-help">Viewing only peeks at a page of messages, not a broker count. The current page refreshes every two seconds. Next page may be empty.</p>
+        <p>Resubmit removes the <code>always-fail</code> property and publishes to the original topic. Other matching subscriptions can receive a copy,
+            and retained <code>fail-first-count</code> or other properties can cause another failure. A successful publish does not prove processing,
+            and a missing delivery report does not prove that processing failed. Purge removes only the selected original without republishing.</p>
+        <p>Actions can temporarily lock other dead letters and affect their delivery counts. If you lost the result or the outcome is uncertain, @DeadLetterRecoveryGuidance</p>
+        <div class="d-flex flex-wrap align-items-end gap-2 mb-2">
+            <div>
+                <label for="dead-letter-subscription" class="form-label">Topic / subscription</label>
+                <select id="dead-letter-subscription" class="form-select" value="@Array.IndexOf(deadLetterSubscriptions, deadLetterSelection)"
+                        disabled="@(deadLetterActing || deadLetterSubscriptions.Length == 0)" @onchange="SelectDeadLetterSubscriptionAsync">
+                    @for (var index = 0; index < deadLetterSubscriptions.Length; index++)
+                    {
+                        var pair = deadLetterSubscriptions[index];
+                        <option value="@index">@pair.Topic / @pair.Subscription</option>
+                    }
+                </select>
+            </div>
+            <button id="dead-letter-refresh" type="button" class="btn btn-outline-secondary" disabled="@deadLetterActing"
+                    @onclick="RefreshDeadLettersAsync">Refresh</button>
+        </div>
+        <div id="dead-letter-load-error" role="alert" class="text-danger-emphasis">@deadLetterLoadError</div>
+        <div tabindex="-1" @ref="deadLetterResult" role="group" aria-label="Dead-letter results">
+        <div id="dead-letter-action-error" role="alert" class="text-danger-emphasis">@deadLetterActionError</div>
+        <div id="dead-letter-status" role="status" aria-atomic="true">
+            @if (deadLetterActionStatus is not null) { <p class="mb-1">@deadLetterActionStatus</p> }
+            @if (deadLetterPage is null && deadLetterLoading) { <p>Loading dead letters…</p> }
+            else if (deadLetterLoadError is null && deadLetterPage?.Messages.Length == 0) { <p>No dead letters on this page.</p> }
+            else if (deadLetterLoadError is null && !deadLetterLoading && deadLetterSelection is null) { <p>No subscriptions configured.</p> }
+        </div>
+        </div>
+        @if (deadLetterPage is { } page && deadLetterSelection is { } selection)
+        {
+            @foreach (var message in page.Messages)
+            {
+                <article class="dead-letter-card mb-2" @key="(selection, message.SequenceNumber)" aria-labelledby="@($"dead-letter-{message.SequenceNumber}")"
+                         @onfocusin="() => focusedDeadLetter = (selection, message.SequenceNumber)"
+                         @onfocusout="() => DeadLetterBlurred(selection, message.SequenceNumber)">
+                    <h3 class="h6" id="@($"dead-letter-{message.SequenceNumber}")">Sequence @message.SequenceNumber</h3>
+                    <dl class="mb-2">
+                        <dt>Message ID</dt><dd><code>@message.MessageId</code></dd>
+                        <dt>Dead-letter reason</dt><dd>@(message.DeadLetterReason ?? "Not provided")</dd>
+                        <dt>Error description</dt><dd>@(message.DeadLetterErrorDescription ?? "Not provided")</dd>
+                        <dt>Delivery count</dt><dd>@message.DeliveryCount</dd>
+                        <dt>Body</dt><dd class="dead-letter-body">@message.Body</dd>
+                        <dt>Application properties</dt>
+                        <dd>
+                            @if (message.ApplicationProperties.Count == 0) { <span>None</span> }
+                            else
+                            {
+                                <dl class="mb-0">
+                                    @foreach (var (key, value) in message.ApplicationProperties)
+                                    {
+                                        <dt>@key</dt><dd>@value</dd>
+                                    }
+                                </dl>
+                            }
+                        </dd>
+                    </dl>
+                    <div class="d-flex flex-wrap gap-2">
+                        <button type="button" class="btn btn-outline-primary" disabled="@deadLetterActing" aria-label="Resubmit sequence @message.SequenceNumber"
+                                @onclick="() => ActOnDeadLetterAsync(selection, message.SequenceNumber, true)">Resubmit</button>
+                        <button type="button" class="btn btn-outline-danger" disabled="@deadLetterActing" aria-label="Purge sequence @message.SequenceNumber"
+                                @onclick="() => BeginPurge(selection, message.SequenceNumber)">Purge</button>
+                    </div>
+                    @if (pendingPurge == (selection, message.SequenceNumber))
+                    {
+                        <fieldset class="mt-2" id="dead-letter-purge-confirmation">
+                            <legend class="h6">Permanently purge sequence @message.SequenceNumber from @selection.Topic / @selection.Subscription?</legend>
+                            <p id="dead-letter-purge-note">This cannot be undone. No copy will be published.</p>
+                            <button type="button" class="btn btn-outline-secondary" @ref="purgeCancel" @onclick="CancelPurge">Cancel</button>
+                            <button type="button" class="btn btn-danger" aria-describedby="dead-letter-purge-note" @onclick="ConfirmPurgeAsync">Confirm purge</button>
+                        </fieldset>
+                    }
+                </article>
+            }
+        }
+        <nav class="d-flex flex-wrap gap-2" aria-label="Dead-letter pages">
+            <button id="dead-letter-previous" type="button" class="btn btn-outline-secondary" disabled="@(deadLetterActing || deadLetterHistory.Count == 0)"
+                    @onclick="() => MoveDeadLetterPageAsync(false)">Previous page</button>
+            <button id="dead-letter-next" type="button" class="btn btn-outline-secondary" disabled="@(deadLetterActing || deadLetterPage?.NextFromSequenceNumber is null)"
+                    @onfocus="() => deadLetterNextFocused = true" @onblur="() => deadLetterNextFocused = false"
+                    @onclick="() => MoveDeadLetterPageAsync(true)">Next page</button>
+        </nav>
+    }
+</section>
+
+<div id="messaging-panel" role="tabpanel" aria-labelledby="messaging-tab" hidden="@DeadLetterActive">
 <p>Publish a message to Azure Service Bus via the producer API, choosing which messaging pattern to demonstrate.</p>
 
 @* Let Blazor show the same accessible option errors for single and burst sends. *@
@@ -307,7 +417,7 @@
             <li class="list-group-item depth-row">
                 <div><strong>Topic:</strong> <code>@topic</code> <strong>Subscription:</strong> <code>@subscription</code></div>
                 <span class="depth-pending">Estimated pending: @count</span>
-                <span class="d-block">Dead-letter: unavailable</span>
+                <span class="d-block">Dead-letter count: unavailable</span>
             </li>
         }
     </ul>
@@ -505,6 +615,7 @@
         </table>
     </div>
 }
+</div>
 
 @code {
     private static readonly (string Id, string Label)[] consumers =
@@ -568,6 +679,7 @@
     public void Dispose()
     {
         disposed = true;
+        CloseDeadLetters();
         Feed.Changed -= OnFeedChanged;
         burst?.Dispose();
         burstDelay?.Cancel();

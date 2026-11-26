@@ -25,6 +25,17 @@ builder.Services.AddHttpClient<ProducerApiClient>(client =>
         client.BaseAddress = new("https+http://producer");
     });
 
+// Do not replay an action after an unconfirmed publish or settlement. Keep service discovery.
+var actionClient = builder.Services.AddHttpClient(ProducerApiClient.DeadLetterActionsClient, client =>
+    {
+        client.BaseAddress = new("https+http://producer");
+        client.Timeout = TimeSpan.FromSeconds(30);
+    })
+    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+#pragma warning disable EXTEXP0001
+actionClient.RemoveAllResilienceHandlers();
+#pragma warning restore EXTEXP0001
+
 builder.Services.AddConsumerControlClient<ConsumerOneControlClient>("https+http://consumer-one");
 builder.Services.AddConsumerControlClient<ConsumerTwoControlClient>("https+http://consumer-two");
 

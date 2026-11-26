@@ -1,0 +1,344 @@
+using System.Net.Http.Json;
+using Bunit;
+using Microsoft.AspNetCore.Components;
+using Microsoft.AspNetCore.Components.Web;
+using ServiceBusDemo.Web;
+using ServiceBusDemo.Web.Components.Pages;
+using TestContext = Xunit.TestContext;
+
+namespace ServiceBusDemo.Tests;
+
+public class HomeDeadLetterTests
+{
+    private static readonly DeadLetterSubscription[] Pairs = [new("business-events", "business-events"), new("routed-events", "eu-orders")];
+
+    [Fact]
+    public async Task TabShowsDetailsPagesAndActionResultsWithoutLosingMessagingState()
+    {
+        await using var context = new BunitContext();
+        using var handler = new Handler();
+        using var client = Client(context, handler);
+        var home = context.Render<Home>();
+        home.Find("#message").Change("keep this draft");
+        Assert.Empty(handler.Requests);
+        Assert.Equal("false", home.Find("#dead-letter-tab[role=tab]").GetAttribute("aria-selected"));
+        await home.Find("#dead-letter-tab").ClickAsync(new());
+        Assert.Equal("true", home.Find("#dead-letter-tab").GetAttribute("aria-selected"));
+        Assert.Equal("dead-letter-tab", home.Find("#dead-letter-panel[role=tabpanel]").GetAttribute("aria-labelledby"));
+        Assert.Equal("Topic / subscription", home.Find("label[for=dead-letter-subscription]").TextContent);
+        Assert.Equal(2, home.FindAll("#dead-letter-subscription option").Count);
+        await home.Find("#dead-letter-subscription").ChangeAsync("1");
+        Assert.Contains("subscription=eu-orders", handler.Requests.Last());
+        Assert.Contains("not a broker count", home.Find("#dead-letter-help").TextContent);
+        var card = home.Find(".dead-letter-card").TextContent;
+        foreach (var text in new[] { "same-id", "poison", "description", "body", "Priority", "High", "5" }) Assert.Contains(text, card);
+        await home.Find("#dead-letter-next").ClickAsync(new());
+        Assert.Contains("fromSequenceNumber=9", handler.Requests.Last());
+        Assert.Contains("Sequence 9", home.Find(".dead-letter-card h3").TextContent);
+        await home.Find("#dead-letter-previous").ClickAsync(new());
+        Assert.DoesNotContain("fromSequenceNumber", handler.Requests.Last());
+        await home.Find("[aria-label='Resubmit sequence 7']").ClickAsync(new());
+        Assert.Contains(handler.Requests, request => request.StartsWith("POST /dead-letters/messages/7/resubmit"));
+        Assert.StartsWith("GET /dead-letters/messages?", handler.Requests.Last());
+        Assert.Contains("Published copy copy-id", home.Find("#dead-letter-status[role=status]").TextContent);
+        await home.Find("[aria-label='Purge sequence 7']").ClickAsync(new());
+        var confirmation = home.Find("#dead-letter-purge-confirmation");
+        Assert.Contains("Permanently purge sequence 7 from routed-events / eu-orders?", confirmation.TextContent);
+        Assert.DoesNotContain(handler.Requests, request => request.StartsWith("POST /dead-letters/messages/7/purge"));
+        confirmation.QuerySelector("button")!.Click();
+        Assert.Empty(home.FindAll("#dead-letter-purge-confirmation"));
+        await home.Find("[aria-label='Purge sequence 7']").ClickAsync(new());
+        await home.Find("#dead-letter-purge-confirmation button.btn-danger").ClickAsync(new());
+        Assert.Contains(handler.Requests, request => request.StartsWith("POST /dead-letters/messages/7/purge"));
+        Assert.Contains("Purge was not confirmed", home.Find("#dead-letter-action-error[role=alert]").TextContent);
+        handler.PeekError = true;
+        await home.Find("#dead-letter-refresh").ClickAsync(new());
+        Assert.Contains("Emulator offline", home.Find("#dead-letter-load-error[role=alert]").TextContent);
+        handler.PeekError = false;
+        await home.Find("#dead-letter-refresh").ClickAsync(new());
+        Assert.Empty(home.Find("#dead-letter-load-error").TextContent);
+        home.Find("#messaging-tab").Click();
+        Assert.Contains("keep this draft", home.Find("#message").OuterHtml);
+    }
+
+    [Fact]
+    public async Task SingleSendKeepsMessagingPanelVisibleUntilTheOutcomeArrives()
+    {
+        var token = TestContext.Current.CancellationToken;
+        await using var context = new BunitContext();
+        var response = new PendingPeek();
+        using var handler = new Handler { PendingSend = response };
+        using var client = Client(context, handler);
+        var home = context.Render<Home>();
+        home.Find("#message").Change("a single send");
+        var send = home.Find("form:has(#message)").SubmitAsync();
+        await response.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5), token);
+        home.WaitForAssertion(() => Assert.Single(home.FindAll("#dead-letter-tab[aria-disabled=true]")));
+        Assert.Contains("after the send finishes", home.Find("#home-tab-status[role=status]").TextContent);
+
+        await home.Find("#dead-letter-tab").ClickAsync(new());
+        await home.Find("[role=tablist]").TriggerEventAsync("onkeydown", new KeyboardEventArgs { Key = "End" });
+        Assert.Single(home.FindAll("#messaging-panel:not([hidden])"));
+        Assert.Single(handler.Requests);
+
+        response.Response.SetResult(Json(new SendMessageResult("single-id", "business-events")));
+        await send;
+        Assert.Contains("Message single-id published", home.Find("#messaging-panel .alert[role=status]").TextContent);
+        Assert.Null(home.Find("#dead-letter-tab").GetAttribute("aria-disabled"));
+        await home.Find("[role=tablist]").TriggerEventAsync("onkeydown", new KeyboardEventArgs { Key = "End" });
+        Assert.Single(home.FindAll("#dead-letter-panel:not([hidden])"));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task PaginationMovesFocusToResultsWhileTheNewPageLoads(bool next)
+    {
+        var token = TestContext.Current.CancellationToken;
+        await using var context = new BunitContext();
+        using var handler = new Handler();
+        using var client = Client(context, handler);
+        var home = context.Render<Home>();
+        await home.Find("#dead-letter-tab").ClickAsync(new());
+        if (!next) await home.Find("#dead-letter-next").ClickAsync(new());
+        var focusCalls = context.JSInterop.Invocations["Blazor._internal.domWrapper.focus"].Count;
+        var selector = next ? "#dead-letter-next" : "#dead-letter-previous";
+        var pending = handler.HoldNextPeek();
+        var move = home.Find(selector).ClickAsync(new());
+        await pending.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5), token);
+        home.WaitForAssertion(() =>
+        {
+            Assert.Single(home.FindAll($"{selector}[disabled]"));
+            Assert.Contains("Loading dead letters", home.Find("[aria-label='Dead-letter results'][tabindex='-1']").TextContent);
+            Assert.Equal(focusCalls + 1, context.JSInterop.Invocations["Blazor._internal.domWrapper.focus"].Count);
+        });
+
+        pending.Response.SetResult(next ? Page(9) : Page(7, 9));
+        await move;
+        Assert.Contains(next ? "Sequence 9" : "Sequence 7", home.Find(".dead-letter-card h3").TextContent);
+        Assert.Single(home.FindAll($"{selector}[disabled]"));
+        Assert.Equal(focusCalls + 1, context.JSInterop.Invocations["Blazor._internal.domWrapper.focus"].Count);
+    }
+
+    [Fact]
+    public async Task StaleSelectionAndPreActionPeeksCannotReplaceNewerResults()
+    {
+        var token = TestContext.Current.CancellationToken;
+        await using var context = new BunitContext();
+        using var handler = new Handler();
+        using var client = Client(context, handler);
+        var home = context.Render<Home>();
+        await home.Find("#dead-letter-tab").ClickAsync(new());
+        var first = handler.HoldNextPeek();
+        var refresh = home.Find("#dead-letter-refresh").ClickAsync(new());
+        await first.Entered.Task.WaitAsync(token);
+        await home.Find("#dead-letter-subscription").ChangeAsync("1");
+        first.Response.SetResult(Page(99));
+        await refresh;
+        Assert.Contains("Sequence 7", home.Find(".dead-letter-card h3").TextContent);
+
+        var second = handler.HoldNextPeek();
+        refresh = home.Find("#dead-letter-refresh").ClickAsync(new());
+        await second.Entered.Task.WaitAsync(token);
+        handler.EmptyPage = true;
+        await home.Find("[aria-label='Resubmit sequence 7']").ClickAsync(new());
+        second.Response.SetResult(Page(7));
+        await refresh;
+        Assert.Empty(home.FindAll(".dead-letter-card"));
+        Assert.Contains("No dead letters", home.Find("#dead-letter-status").TextContent);
+        Assert.Single(context.JSInterop.Invocations["Blazor._internal.domWrapper.focus"]);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PendingActionKeepsItsPanelAndWarnsBeforeNavigation(bool uncertain)
+    {
+        var token = TestContext.Current.CancellationToken;
+        await using var context = new BunitContext();
+        using var handler = new Handler { Action = new PendingPeek() };
+        using var client = Client(context, handler);
+        var navigation = context.Services.GetRequiredService<NavigationManager>();
+        var originalUri = navigation.Uri;
+        context.JSInterop.Setup<bool>("confirm", _ => true).SetResult(false);
+        var home = context.Render<Home>();
+        await home.Find("#dead-letter-tab").ClickAsync(new());
+        var action = home.Find("[aria-label='Resubmit sequence 7']").ClickAsync(new());
+        var requestToken = await handler.Action.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5), token);
+        home.WaitForAssertion(() => Assert.Single(context.JSInterop.Invocations["Blazor._internal.NavigationLock.enableNavigationPrompt"]));
+        Assert.Single(home.FindAll("#messaging-tab[aria-disabled=true]"));
+        Assert.Contains("after the dead-letter action finishes", home.Find("#home-tab-status[role=status]").TextContent);
+        var focusCalls = context.JSInterop.Invocations["Blazor._internal.domWrapper.focus"].Count;
+        await home.Find("#messaging-tab").ClickAsync(new());
+        await home.Find("[role=tablist]").TriggerEventAsync("onkeydown", new KeyboardEventArgs { Key = "Home" });
+        Assert.Equal(focusCalls, context.JSInterop.Invocations["Blazor._internal.domWrapper.focus"].Count);
+        Assert.Single(home.FindAll("#dead-letter-tab[aria-selected=true]"));
+        Assert.Single(home.FindAll("#dead-letter-panel:not([hidden])"));
+
+        var warning = home.Find("#dead-letter-navigation-warning").TextContent;
+        Assert.Contains("investigate", warning);
+        Assert.Contains("duplicates", warning);
+        await home.InvokeAsync(() => navigation.NavigateTo("/Error"));
+        Assert.Equal(originalUri, navigation.Uri);
+        Assert.Contains(warning, Assert.IsType<string>(Assert.Single(context.JSInterop.Invocations["confirm"]).Arguments[0]));
+        Assert.False(requestToken.IsCancellationRequested);
+        handler.Action.Response.SetResult(uncertain
+            ? new HttpResponseMessage(HttpStatusCode.BadGateway) { Content = new StringContent("Publish was not confirmed") }
+            : Json(new DeadLetterActionResult("copy-id")));
+        await action;
+        Assert.Single(home.FindAll("#dead-letter-panel:not([hidden])"));
+        if (uncertain)
+        {
+            var error = home.Find("#dead-letter-action-error[role=alert]").TextContent;
+            Assert.Contains("Publish was not confirmed", error);
+            Assert.Contains("duplicates", error);
+        }
+        else
+        {
+            Assert.Contains("Published copy copy-id", home.Find("#dead-letter-status[role=status]").TextContent);
+        }
+        home.WaitForAssertion(() => Assert.Single(context.JSInterop.Invocations["Blazor._internal.NavigationLock.disableNavigationPrompt"]));
+        Assert.Empty(home.Find("#home-tab-status").TextContent);
+        await home.Find("[role=tablist]").TriggerEventAsync("onkeydown", new KeyboardEventArgs { Key = "Home" });
+        Assert.Single(home.FindAll("#messaging-panel:not([hidden])"));
+    }
+
+    [Fact]
+    public async Task PollMovesFocusToResultsWhenFocusedCardDisappears()
+    {
+        await using var context = new BunitContext();
+        using var handler = new Handler();
+        using var client = Client(context, handler);
+        var home = context.Render<Home>();
+        await home.Find("#dead-letter-tab").ClickAsync(new());
+        await home.Find(".dead-letter-card").TriggerEventAsync("onfocusin", new FocusEventArgs());
+        handler.EmptyPage = true;
+        home.WaitForAssertion(() =>
+        {
+            Assert.Empty(home.FindAll(".dead-letter-card"));
+            Assert.Single(context.JSInterop.Invocations["Blazor._internal.domWrapper.focus"]);
+        }, TimeSpan.FromSeconds(5));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PollMovesFocusBeforeDisablingNextOnlyIfItIsStillFocused(bool blur)
+    {
+        var token = TestContext.Current.CancellationToken;
+        await using var context = new BunitContext();
+        using var handler = new Handler();
+        using var client = Client(context, handler);
+        var home = context.Render<Home>();
+        var nextEnabledAtFocus = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var focus = context.JSInterop.SetupVoid("Blazor._internal.domWrapper.focus", _ =>
+        {
+            nextEnabledAtFocus.TrySetResult(!home.Find("#dead-letter-next").HasAttribute("disabled"));
+            return true;
+        });
+        await home.Find("#dead-letter-tab").ClickAsync(new());
+        var pending = handler.HoldNextPeek();
+        await home.Find("#dead-letter-next").TriggerEventAsync("onfocus", new FocusEventArgs());
+        await pending.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5), token);
+        if (blur) await home.Find("#dead-letter-next").TriggerEventAsync("onblur", new FocusEventArgs());
+        pending.Response.SetResult(Json(new DeadLetterPage([], null)));
+
+        if (!blur)
+        {
+            Assert.True(await nextEnabledAtFocus.Task.WaitAsync(TimeSpan.FromSeconds(5), token));
+            focus.SetVoidResult();
+        }
+
+        home.WaitForAssertion(() =>
+        {
+            Assert.Single(home.FindAll("#dead-letter-next[disabled]"));
+            Assert.Contains("No dead letters on this page", home.Find("#dead-letter-status").TextContent);
+            Assert.Equal(blur ? 0 : 1, focus.Invocations.Count);
+        }, TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task PollsWhileActiveAndCancelsPendingPollOnDisposal()
+    {
+        var token = TestContext.Current.CancellationToken;
+        await using var context = new BunitContext();
+        using var handler = new Handler();
+        using var client = Client(context, handler);
+        var home = context.Render<Home>();
+        await home.Find("#dead-letter-tab").ClickAsync(new());
+        var pending = handler.HoldNextPeek();
+        var requestToken = await pending.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5), token);
+        Assert.False(requestToken.IsCancellationRequested);
+        await context.DisposeComponentsAsync();
+        Assert.True(requestToken.IsCancellationRequested);
+        pending.Response.SetResult(Page(7));
+    }
+
+    private static HttpClient Client(BunitContext context, Handler handler)
+    {
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        var client = new HttpClient(handler) { BaseAddress = new Uri("https://producer.test") };
+        context.Services.AddSingleton(new ProducerApiClient(client));
+        context.Services.AddControlTestClients();
+        context.Services.AddSingleton(new DeliveryFeed());
+        return client;
+    }
+
+    private static HttpResponseMessage Page(long sequence, long? next = null) => Json(new DeadLetterPage(
+        [new(sequence, "same-id", "poison", "description", "body", new Dictionary<string, string> { ["Priority"] = "High" }, 5)], next));
+
+    private static HttpResponseMessage Json<T>(T value) => new(HttpStatusCode.OK) { Content = JsonContent.Create(value) };
+
+    private sealed class PendingPeek
+    {
+        public TaskCompletionSource<CancellationToken> Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource<HttpResponseMessage> Response { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
+    private sealed class Handler : HttpMessageHandler
+    {
+        private PendingPeek? pending;
+        public System.Collections.Concurrent.ConcurrentQueue<string> Requests { get; } = new();
+        public bool PeekError { get; set; }
+        public bool EmptyPage { get; set; }
+        public PendingPeek? Action { get; init; }
+        public PendingPeek? PendingSend { get; init; }
+        public PendingPeek HoldNextPeek()
+        {
+            var peek = new PendingPeek();
+            Interlocked.Exchange(ref pending, peek);
+            return peek;
+        }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            Requests.Enqueue($"{request.Method} {request.RequestUri.PathAndQuery}");
+            if (path == "/sendMessage" && PendingSend is { } send)
+            {
+                send.Entered.SetResult(cancellationToken);
+                return send.Response.Task;
+            }
+            if (path.EndsWith("/subscriptions")) return Task.FromResult(Json(Pairs));
+            if (path.EndsWith("/resubmit"))
+            {
+                if (Action is { } action)
+                {
+                    action.Entered.SetResult(cancellationToken);
+                    return action.Response.Task;
+                }
+
+                return Task.FromResult(Json(new DeadLetterActionResult("copy-id")));
+            }
+            if (path.EndsWith("/purge")) return Task.FromResult(new HttpResponseMessage(HttpStatusCode.BadGateway) { Content = new StringContent("Purge was not confirmed") });
+            if (Interlocked.Exchange(ref pending, null) is { } peek)
+            {
+                peek.Entered.SetResult(cancellationToken);
+                return peek.Response.Task;
+            }
+            if (PeekError) return Task.FromResult(new HttpResponseMessage(HttpStatusCode.BadGateway) { Content = new StringContent("Emulator offline") });
+            if (EmptyPage) return Task.FromResult(Json(new DeadLetterPage([], null)));
+            return Task.FromResult(request.RequestUri.Query.Contains("fromSequenceNumber=9") ? Page(9) : Page(7, 9));
+        }
+    }
+}
