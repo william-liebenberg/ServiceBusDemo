@@ -1,7 +1,9 @@
 using Azure.Messaging.ServiceBus;
 using System.Collections.Concurrent;
 using System.Net.Http.Json;
+using AngleSharp.Dom;
 using AngleSharp.Html.Dom;
+using AngleSharp.Html.Parser;
 using Aspire.Hosting;
 using Bunit;
 using Microsoft.AspNetCore.Builder;
@@ -96,8 +98,11 @@ public class WebTests
         using var producer = app.CreateHttpClient("producer", "http");
         using var home = await web.GetAsync("/", token);
         Assert.Equal(HttpStatusCode.OK, home.StatusCode);
-        var competing = await PublishAsync(producer, "/sendMessage", token);
-        var broadcast = await PublishAsync(producer, "/broadcastMessage", token);
+        var competingBody = $"Shared order {Guid.NewGuid():N}";
+        var broadcastBody = $"Broadcast order {Guid.NewGuid():N}";
+        var competing = await PublishAsync(producer, "/sendMessage", token, new(competingBody));
+        var broadcast = await PublishAsync(producer, "/broadcastMessage", token, new(broadcastBody));
+        await VerifyRenderedDeliveriesAsync(web, competing, competingBody, broadcast, broadcastBody, token);
         await WaitForReportsAsync(reports, competing, 1, token);
         await WaitForReportsAsync(reports, broadcast, 2, token);
 
@@ -155,6 +160,62 @@ public class WebTests
         var fanoutReports = reports.Where(report => report.Delivery.MessageId == broadcast).ToArray();
         Assert.All(fanoutReports, report => Assert.Equal(HttpStatusCode.Accepted, report.Status));
         AssertFanout(fanoutReports.Select(report => report.Delivery));
+    }
+
+    private static async Task VerifyRenderedDeliveriesAsync(HttpClient web, string competing, string competingBody,
+        string broadcast, string broadcastBody, CancellationToken token)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
+        deadline.CancelAfter(TimeSpan.FromSeconds(30));
+        var parser = new HtmlParser();
+        IElement[] shared = [], fanout = [];
+        try
+        {
+            async Task ReadCardsAsync()
+            {
+                var html = await web.GetStringAsync("/", deadline.Token);
+                var page = await parser.ParseDocumentAsync(html, deadline.Token);
+                var cards = page.QuerySelectorAll(".delivery-card").ToLookup(card => Field(card, "Message ID"));
+                shared = cards[competing].ToArray();
+                fanout = cards[broadcast].ToArray();
+            }
+
+            await ReadCardsAsync();
+            while (shared.Length < 1 || fanout.Length < 2)
+            {
+                await Task.Delay(100, deadline.Token);
+                await ReadCardsAsync();
+            }
+
+            // An incorrectly duplicated delivery may arrive after the first card is rendered.
+            await Task.Delay(TimeSpan.FromSeconds(2), deadline.Token);
+            await ReadCardsAsync();
+        }
+        catch (OperationCanceledException) when (!token.IsCancellationRequested)
+        {
+            Assert.Fail($"Timed out polling Home for delivery cards: shared {competing} ({shared.Length}/1), " +
+                $"broadcast {broadcast} ({fanout.Length}/2).");
+        }
+
+        var sharedCard = Assert.Single(shared);
+        Assert.Contains(sharedCard.Closest(".delivery-lanes > section")?.Id, new[] { "ConsumerOne", "ConsumerTwo" });
+        AssertCard(sharedCard, "Competing consumers", "business-events", competingBody);
+        Assert.Collection(fanout.OrderBy(card => card.Closest(".delivery-lanes > section")?.Id, StringComparer.Ordinal),
+            card => AssertFanoutCard(card, "ConsumerOne", "consumer-one"),
+            card => AssertFanoutCard(card, "ConsumerTwo", "consumer-two"));
+
+        void AssertFanoutCard(IElement card, string lane, string subscription)
+        {
+            Assert.Equal(lane, card.Closest(".delivery-lanes > section")?.Id);
+            AssertCard(card, "Publish/subscribe", subscription, broadcastBody);
+        }
+
+        static void AssertCard(IElement card, string pattern, string subscription, string body) =>
+            Assert.Equal((pattern, subscription, body, DeliveryOutcomes.Completed),
+                (card.QuerySelector(".delivery-pattern")?.TextContent, Field(card, "Subscription"), Field(card, "Body"), Field(card, "Outcome")));
+
+        static string? Field(IElement card, string label) => card.QuerySelectorAll("dl > dt")
+            .FirstOrDefault(field => field.TextContent == label)?.NextElementSibling?.TextContent;
     }
 
     private static async Task VerifyDeadLetterRecoveryAsync(HttpClient producer,

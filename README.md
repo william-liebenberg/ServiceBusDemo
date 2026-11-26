@@ -12,14 +12,17 @@
   <img alt=".NET Aspire" src="https://img.shields.io/badge/orchestrated%20with-.NET%20Aspire-512BD4?logoColor=white" />
 </p>
 
-## What you'll learn
+## What you can try
 
-- How a **topic** fans messages out to its **subscriptions**.
-- Why consumers sharing one subscription compete for each message.
-- How independent subscriptions give each consumer its own copy.
-- How broker-side subscription rules route messages based on application properties.
-- How to publish with `ServiceBusSender` and receive with `ServiceBusProcessor`.
-- How .NET Aspire wires the producer, consumers, and local Service Bus emulator together.
+- In **Messaging**, compare **Competing consumers**, **Publish/subscribe**, and **Topic filters** with a local Service Bus emulator.
+- In **Deliveries**, watch cards appear in each consumer's lane after settlement. Hover over or focus a card to highlight other visible reports with the same **Message ID**.
+- Add metadata in **Advanced** and compare **Sent this session** with what the consumers received. Use **Burst sender** to track acknowledged sends and reported deliveries.
+- **Pause** and **Resume** consumers and watch **Subscription depth** estimates change as reports arrive.
+- Use **Failure lab** to see retries, slow handling, and dead-lettering. In **Dead-letter**, inspect messages, **Resubmit** a copy, or **Purge** the original.
+
+![Live Deliveries feed with matching completed publish/subscribe cards highlighted in the Consumer One and Consumer Two lanes](docs/delivery-feed.png)
+
+One publish, two subscriptions: both completed cards show the same **Message ID** but different **Subscription** values.
 
 ## The app at a glance
 
@@ -45,16 +48,21 @@ flowchart LR
     HighSub --> C1
     AllSub --> C1
     EuSub --> C2
+    C1 -. "HTTP POST /api/deliveries" .-> Feed[Web in-memory delivery feed]
+    C2 -. "HTTP POST /api/deliveries" .-> Feed
+    Feed -->|renders Deliveries| UI
 
     classDef app fill:#0b5cab,color:#fff,stroke:#073b73,stroke-width:2px;
     classDef topic fill:#6f42c1,color:#fff,stroke:#4c2889,stroke-width:2px;
     classDef subscription fill:#008272,color:#fff,stroke:#005a50,stroke-width:2px;
-    class UI,API,C1,C2 app;
+    class UI,API,C1,C2,Feed app;
     class SharedTopic,FanoutTopic,RoutedTopic topic;
     class SharedSub,SubOne,SubTwo,HighSub,EuSub,AllSub subscription;
 ```
 
 The Web UI calls the Producer API. The API publishes to one of three topics; each topic's subscriptions determine which consumers receive the message. Aspire creates the local resources and supplies connection configuration to the services.
+
+The subscription-to-consumer arrows show Service Bus delivery. The HTTP arrows show [best-effort reports](#delivery-event-ingest) sent by both consumers **after** successful settlement. Reporting is not part of broker settlement: a missing card does not mean the message wasn't processed.
 
 ## Pattern 1: Competing consumers
 
@@ -185,13 +193,17 @@ From the repository root:
 dotnet run --project ServiceBusDemo.AppHost
 ```
 
-Aspire starts the emulator with all three topics and their subscriptions, and launches the web UI, producer, and two consumers. Open the **webfrontend** endpoint shown in the Aspire dashboard, choose a pattern, enter a message, and select **Send**. The dashboard is also where you can inspect resource health and the consumer logs.
+Aspire starts the emulator with all three topics and their subscriptions, and launches the Web UI, producer, and two consumers. Once the resources are healthy, open **webfrontend** from the Aspire dashboard. Watch **Deliveries** first; use the dashboard's resource health and consumer logs to troubleshoot missing or unexpected reports.
 
-To observe the difference, send one message with each pattern and look at the consumer logs:
+### Suggested demo script
 
-- **Competing consumers:** find `[CompetingConsumers]`; only one of the two consumers handles a given message in the normal case.
-- **Publish/subscribe:** find `[PubSub]`; both consumers log the same message ID, each from its own subscription.
-- **Topic filters:** find `[TopicFilters]`; the same message ID appears once for each matching subscription.
+1. **Share work.** In **Messaging**, choose **Competing consumers**, enter `Order 41 placed` in **Message**, and select **Send**. Find the ID in **Sent this session** and the matching `Completed` card in either lane of **Deliveries**. The consumers share one `business-events` subscription, so one consumer handles the normal delivery. Don't promise alternating lanes.
+2. **Fan out and compare metadata.** Choose **Publish/subscribe**. Open **Advanced**, set **Subject** to `Order placed`, and use **Add property** to add `Source` = `Demo`. Send `Order 42 placed`. Compare the [metadata](#add-message-metadata) in **Sent this session** and the two cards. Hover over or focus a card to highlight its counterpart: same ID, but `consumer-one` and `consumer-two` are independent subscriptions.
+3. **Route by properties.** Choose **Topic filters**, set **Priority** to `High` and **Region** to `EU` under **Routing properties**, and send `Priority EU order`. Find three cards with the same ID: `high-priority` and `all` in Consumer One, and `eu-orders` in Consumer Two. Send again with both fields blank to show that only `all` matches. The broker evaluates each rule independently; the **Burst sender** is unavailable for this pattern.
+4. **Compare bursts.** With both consumers running and failure options off, set **Count** to `5` in **Burst sender**. Try **Send burst** once per pattern: **Competing consumers**, then **Publish/subscribe**. With all reports arriving once, the shared lanes add to five, while the broadcast lanes each reach five. To show pacing and cancellation, use **Limit rate**, set **Rate** to `1`, and select **Cancel burst** before the burst finishes. The [bars count reports](#try-a-burst), not queued work.
+5. **Pause, send, and drain.** Reload Home for fresh sent history. Under **Deliveries**, select **Pause** in both lanes and wait for **Paused**. Enter a fresh **Message**, then send a **Competing consumers** burst with **Count** set to `2`; **Estimated pending** should rise to two for the shared subscription. **Resume** Consumer One and watch its cards arrive and the estimate return to zero. Send one publish/subscribe message: Consumer Two's estimate stays at one until you **Resume** it. Explain that [SDK counts are unavailable and the UI estimates depth](#subscription-depth-in-the-emulator).
+6. **Show retries and concurrency.** In **Publish/subscribe**, enable **Fail first N attempts**, leave the count at two, and send. Each subscription should show two `Abandoned` cards and then `Completed` for the same ID. Turn fail-first off, send with **Slow handler** set to ten seconds, then turn it off and send a normal message. The normal cards can appear first because each processor has two concurrent slots. The delayed card shows the initial lock expiration, not any renewal; a long delay [does not guarantee lock expiry](#try-the-failure-lab).
+7. **Recover a poison message.** With the other failure options off, choose **Competing consumers**, enable **Poison message (always fail)**, and send. Follow the same ID from four abandons to [explicit dead-lettering on attempt five](#try-the-failure-lab). Open **Dead-letter**, select `business-events / business-events` under **Topic / subscription**, and inspect `FailureLabAttemptLimit`. Choose **Resubmit**; return to **Messaging** and watch for a completed card with the same body and a new ID. To show deletion instead, create another poison message and use **Purge**, then **Confirm purge**. Explain the [recovery limits](#inspect-and-recover-dead-letters): resubmission can create other copies, and publishing and removing the original are not atomic.
 
 ### Add message metadata
 
@@ -214,7 +226,7 @@ The local Aspire emulator configuration sets the broker's `MaxDeliveryCount` to 
 
 ### Inspect and recover dead letters
 
-1. Send a **Poison message** with the other failure options off. Open Home's **Dead-letter** tab and choose the matching topic and subscription, including any routed subscription. The view automatically refreshes every two seconds while open and shows the reason, description, body, properties, and delivery count. Use **Refresh**, **Previous page**, and **Next page** to browse. Viewing uses non-destructive peek; a page is not a broker count.
+1. Send with **Poison message (always fail)** enabled and the other failure options off. Open Home's **Dead-letter** tab and choose the matching topic and subscription, including any routed subscription. The view automatically refreshes every two seconds while open and shows the reason, description, body, properties, and delivery count. Use **Refresh**, **Previous page**, and **Next page** to browse. Viewing uses non-destructive peek; a page is not a broker count.
 2. **Resubmit** publishes a new message ID with the original body, subject, correlation ID, content type, and application properties except `always-fail` (case-insensitive), then completes the selected original. Republishing to the topic can deliver additional copies to other matching subscriptions. Retained `fail-first-count` or other properties can cause another failure. A successful publish does not guarantee processing, and a missing delivery report does not prove processing failed.
 3. **Purge** asks you to confirm the topic, subscription, and sequence number before completing just that original without sending a copy. Service Bus cannot lock an arbitrary peeked sequence directly: the API holds other messages while searching up to five batches of ten and abandons their locks in cleanup. This can temporarily lock unrelated messages and affect their delivery counts. If the target cannot be locked in the bounded search, no message is completed.
 
@@ -268,6 +280,8 @@ To walk through the estimate, start with a fresh Home page:
 Verified separately in Chromium against the running AppHost and emulator: the shared estimate rose from 0 to 2 with both consumers paused and returned to 0 after resuming Consumer One. A broadcast then left Consumer Two's estimate at 1 while Consumer One's was 0; resuming Consumer Two returned all three rows to 0. The UI sequence is also covered in bUnit with simulated control and delivery responses.
 
 ### Run the tests
+
+The full suite requires the .NET 11 SDK and running Docker; the Aspire integration test starts a real local Service Bus emulator and checks the running Web app's rendered delivery cards.
 
 ```powershell
 dotnet test ServiceBusDemo.slnx
@@ -359,6 +373,6 @@ The feed keeps the most recent 200 events in memory and loses them when the Web 
 1. Add a subscription in `ServiceBusDemo.AppHost/AppHost.cs`.
 2. Pass its topic and subscription names to the intended consumer with `WithEnvironment`.
 3. Add a processor for that entity in the consumer's `MessageConsumer`.
-4. Publish a message and verify the resulting logs in the Aspire dashboard.
+4. Publish a message and check **Deliveries** for the message ID and subscription. If a card is missing, check the consumer logs in the Aspire dashboard.
 
 If this helped you understand the patterns, a ⭐ on the repo is always appreciated!
